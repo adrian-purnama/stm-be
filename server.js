@@ -6,6 +6,9 @@ const dotenv = require('dotenv');
 // Load environment variables
 dotenv.config();
 
+const http = require('http');
+const { setupNotificationWebsocket } = require('./websocket/notificationWebsocket');
+
 const app = express();
 const PORT = process.env.PORT || 5000;
 
@@ -48,6 +51,8 @@ app.use('/api/assets', require('./routes/assets'));
 app.use('/api/notes-images', require('./routes/notesImages').router);
 app.use('/api/permissions', require('./routes/permissions'));
 app.use('/api/permission-categories', require("./routes/permissionCategories"));
+app.use('/api/notifications', require('./routes/notifications'));
+app.use('/api/rfq', require('./routes/rfq'));
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
@@ -84,7 +89,14 @@ app.use('*', (req, res) => {
   });
 });
 
-app.listen(PORT, () => {
+// Create HTTP server to attach WebSocket server
+const server = http.createServer(app);
+
+// WebSocket server for notifications
+const wss = setupNotificationWebsocket(server);
+
+server.listen(PORT, () => {
   console.log(`🚀 Server is running on port ${PORT}`);
   console.log(`📊 Health check: http://localhost:${PORT}/api/health`);
+  console.log(`🔔 Notification WS: ws://localhost:${PORT}/notification`);
 });

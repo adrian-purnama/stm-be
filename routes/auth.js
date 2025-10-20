@@ -488,21 +488,32 @@ router.post('/users', authenticateToken, authorize(['user_create']), async (req,
       roles: roles || []
     });
 
-    // Populate roles for response
-    const userWithRoles = await User.findById(user._id).populate('roles');
-
+    // Return created user (permissions-based system; no roles)
+    const freshUser = await User.findById(user._id).populate('permissions');
     sendSuccessResponse(res, 201, 'User created successfully', {
       user: {
-        id: user._id,
-        email: user.email,
-        fullName: user.fullName,
-        roles: userWithRoles.roles,
-        createdAt: user.createdAt
+        id: freshUser._id,
+        email: freshUser.email,
+        fullName: freshUser.fullName,
+        permissions: freshUser.permissions,
+        isActive: freshUser.isActive,
+        createdAt: freshUser.createdAt
       }
     });
 
   } catch (error) {
-    handleValidationError(res, error);
+    // Return a clear message so the client can show it (avoid generic 500 with no details)
+    // Try known validation/duplicate errors first
+    if (error.name === 'ValidationError') {
+      const messages = Object.values(error.errors).map(e => e.message).join(', ');
+      return sendErrorResponse(res, 400, messages);
+    }
+    if (error.code === 11000) {
+      const field = Object.keys(error.keyPattern || {})[0] || 'field';
+      return sendErrorResponse(res, 400, `${field} already exists`);
+    }
+    // Fallback to the actual error message
+    return sendErrorResponse(res, 400, error.message || 'Failed to create user');
   }
 });
 
