@@ -8,7 +8,7 @@ const { getQuotationAnalysis } = require('../utils/quotationHelper');
 // ============================================================================
 
 // Get quotation analysis/statistics overview
-router.get('/overview', authenticateToken, authorize('user', 'admin'), async (req, res) => {
+router.get('/overview', authenticateToken, authorize(["placeholder_test"]), async (req, res) => {
   try {
     const { startDate, endDate, metric } = req.query;
     const analysis = await getQuotationAnalysis({ 
@@ -32,7 +32,7 @@ router.get('/overview', authenticateToken, authorize('user', 'admin'), async (re
 });
 
 // Get detailed quotation statistics by status
-router.get('/status-breakdown', authenticateToken, authorize('user', 'admin'), async (req, res) => {
+router.get('/status-breakdown', authenticateToken, authorize(["placeholder_test"]), async (req, res) => {
   try {
     const { userId } = req.user;
     const analysis = await getQuotationAnalysis(userId);
@@ -61,7 +61,7 @@ router.get('/status-breakdown', authenticateToken, authorize('user', 'admin'), a
 });
 
 // Get follow-up status analysis
-router.get('/follow-up-status', authenticateToken, authorize('user', 'admin'), async (req, res) => {
+router.get('/follow-up-status', authenticateToken, authorize(["placeholder_test"]), async (req, res) => {
   try {
     const { userId } = req.user;
     const analysis = await getQuotationAnalysis(userId);
@@ -88,7 +88,7 @@ router.get('/follow-up-status', authenticateToken, authorize('user', 'admin'), a
 });
 
 // Get quotation trends over time
-router.get('/trends', authenticateToken, authorize('user', 'admin'), async (req, res) => {
+router.get('/trends', authenticateToken, authorize(["placeholder_test"]), async (req, res) => {
   try {
     const { userId } = req.user;
     const { period = '30d' } = req.query; // 7d, 30d, 90d, 1y
@@ -119,7 +119,7 @@ router.get('/trends', authenticateToken, authorize('user', 'admin'), async (req,
 });
 
 // Get customer analysis
-router.get('/customers', authenticateToken, authorize('user', 'admin'), async (req, res) => {
+router.get('/customers', authenticateToken, authorize(["placeholder_test"]), async (req, res) => {
   try {
     const { userId } = req.user;
     const analysis = await getQuotationAnalysis(userId);
@@ -147,7 +147,7 @@ router.get('/customers', authenticateToken, authorize('user', 'admin'), async (r
 });
 
 // Get performance metrics
-router.get('/performance', authenticateToken, authorize('user', 'admin'), async (req, res) => {
+router.get('/performance', authenticateToken, authorize(["placeholder_test"]), async (req, res) => {
   try {
     const { userId } = req.user;
     const analysis = await getQuotationAnalysis(userId);
@@ -179,7 +179,7 @@ router.get('/performance', authenticateToken, authorize('user', 'admin'), async 
 });
 
 // Get export data for analysis
-router.get('/export', authenticateToken, authorize('user', 'admin'), async (req, res) => {
+router.get('/export', authenticateToken, authorize(["placeholder_test"]), async (req, res) => {
   try {
     const { userId } = req.user;
     const { format = 'json', startDate, endDate, metric } = req.query; // json, csv, xlsx
