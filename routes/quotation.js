@@ -29,19 +29,17 @@ const {
 // Get all quotations for the authenticated user
 router.get('/', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
   try {
-    const { page = 1, limit = 10, ...filters } = req.query;
+    const { page = 1, limit = 10, filterMode = 'all', ...filters } = req.query;
     
-    // Check if user has quotation_requester permission
+    // Get user with permissions
     const user = await require('../models/user.model').findById(req.user.userId).populate('permissions');
-    const canRequestQuotation = user.permissions.some(p => p.name === 'quotation_requester');
+    const userPermissions = user.permissions.map(p => p.name);
     
-    let userFilters = {
-      ...filters,
-      userId: req.user.userId
-    };
+    let userFilters = { ...filters };
     
-    // If user is a requester, also include quotations created from their RFQs
-    if (canRequestQuotation) {
+    // Apply role-based filtering based on filterMode
+    if (filterMode === 'my_quotations') {
+      // Show only quotations where user is the requester (from their RFQs)
       const { RFQ } = require('../models/rfq.model');
       
       // Find RFQs where this user is the requester and quotation was created
@@ -53,19 +51,85 @@ router.get('/', authenticateToken, authorize(['placeholder_test']), async (req, 
       const quotationIds = rfqsWithQuotations.map(rfq => rfq.quotationId);
       
       if (quotationIds.length > 0) {
-        // Include both user's own quotations and quotations from their RFQs
-        userFilters = {
-          ...filters,
-          $or: [
-            { userId: req.user.userId },
-            { _id: { $in: quotationIds } }
-          ]
-        };
+        userFilters._id = { $in: quotationIds };
+      } else {
+        // No quotations from user's RFQs, return empty result
+        userFilters._id = { $in: [] };
       }
+    } else if (filterMode === 'created_by_me') {
+      // Show only quotations created by this user
+      userFilters.userId = req.user.userId;
+    } else if (filterMode === 'approve_rfq') {
+      // Show only RFQs where user is the approver (this is handled in RFQ route, not here)
+      // This filter mode is not applicable for quotations
+      return res.status(400).json({
+        success: false,
+        message: 'approve_rfq filter mode is not applicable for quotations'
+      });
+    } else {
+      // filterMode === 'all' - Show all quotations (admin/manager view)
+      // Only allow if user has admin/manager permissions
+      const hasAdminPermission = userPermissions.includes('quotation_admin') || 
+                                 userPermissions.includes('admin') ||
+                                 userPermissions.includes('manager');
+      
+      if (!hasAdminPermission) {
+        return res.status(403).json({
+          success: false,
+          message: 'Access denied. Admin permission required to view all quotations.'
+        });
+      }
+      // No additional filtering needed for admin users
     }
     
     const result = await getQuotations(userFilters, { page: parseInt(page), limit: parseInt(limit) });
     
+    // Additional security check: Filter out quotations the user shouldn't see
+    const { RFQ } = require('../models/rfq.model');
+    const filteredQuotations = [];
+    
+    for (const quotation of result.quotations) {
+      let canAccess = false;
+      
+      // Check if user is the creator
+      if (quotation.header.userId.toString() === req.user.userId.toString()) {
+        canAccess = true;
+      }
+      
+      // Check if user is the requester (from RFQ)
+      if (!canAccess) {
+        const rfq = await RFQ.findOne({
+          quotationId: quotation.header._id,
+          requesterId: req.user.userId
+        });
+        if (rfq) {
+          canAccess = true;
+        }
+      }
+      
+      // Check if user is the approver (from RFQ)
+      if (!canAccess) {
+        const rfq = await RFQ.findOne({
+          quotationId: quotation.header._id,
+          approverId: req.user.userId
+        });
+        if (rfq) {
+          canAccess = true;
+        }
+      }
+      
+      // Admin users can see all quotations (already checked above)
+      if (filterMode === 'all') {
+        canAccess = true;
+      }
+      
+      if (canAccess) {
+        filteredQuotations.push(quotation);
+      }
+    }
+    
+    // Update result with filtered quotations
+    result.quotations = filteredQuotations;
     
     // Simplify the response - only include essential data
     const simplifiedQuotations = result.quotations.map(quotation => ({
@@ -133,6 +197,97 @@ router.get('/', authenticateToken, authorize(['placeholder_test']), async (req, 
     res.status(400).json({
       success: false,
       message: error.message
+    });
+  }
+});
+
+// Get all quotations for users with all_quotation_viewer permission
+router.get('/all', authenticateToken, authorize(['all_quotation_viewer']), async (req, res) => {
+  try {
+    const { page = 1, limit = 10, ...filters } = req.query;
+    
+    // Get user with permissions
+    const user = await require('../models/user.model').findById(req.user.userId).populate('permissions');
+    const userPermissions = user.permissions.map(p => p.name);
+    
+    // Check if user has all_quotation_viewer permission
+    const hasAllQuotationViewerPermission = userPermissions.includes('all_quotation_viewer');
+    
+    if (!hasAllQuotationViewerPermission) {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied. all_quotation_viewer permission required to view all quotations.'
+      });
+    }
+    
+    // No additional filtering needed - show all quotations
+    const result = await getQuotations(filters, { page: parseInt(page), limit: parseInt(limit) });
+    
+    // Simplify the response - only include essential data
+    const simplifiedQuotations = result.quotations.map(quotation => ({
+      header: {
+        _id: quotation.header._id,
+        quotationNumber: quotation.header.quotationNumber,
+        customerName: quotation.header.customerName,
+        contactPerson: quotation.header.contactPerson,
+        status: quotation.header.status,
+        selectedOfferId: quotation.header.selectedOfferId,
+        selectedOfferItemIds: quotation.header.selectedOfferItemIds,
+        lastFollowUpDate: quotation.header.lastFollowUpDate,
+        followUpStatus: quotation.header.followUpStatus,
+        marketingName: quotation.header.marketingName,
+        createdAt: quotation.header.createdAt,
+        updatedAt: quotation.header.updatedAt
+      },
+      offers: quotation.offers.map(offerGroup => ({
+        original: offerGroup.original ? {
+          _id: offerGroup.original._id,
+          offerNumber: offerGroup.original.offerNumber,
+          offerNumberInQuotation: offerGroup.original.offerNumberInQuotation,
+          totalPrice: offerGroup.original.totalPrice,
+          totalNetto: offerGroup.original.totalNetto,
+          totalDiscount: offerGroup.original.totalDiscount,
+          excludePPN: offerGroup.original.excludePPN,
+          isFullyAccepted: offerGroup.original.isFullyAccepted,
+          isPartiallyAccepted: offerGroup.original.isPartiallyAccepted,
+          acceptedItemsCount: offerGroup.original.acceptedItemsCount,
+          totalItemsCount: offerGroup.original.totalItemsCount,
+          revision: offerGroup.original.revision,
+          notes: offerGroup.original.notes,
+          notesImages: offerGroup.original.notesImages || [],
+          offerItems: offerGroup.original.offerItems || []
+        } : null,
+        revisions: offerGroup.revisions.map(revision => ({
+          _id: revision._id,
+          offerNumber: revision.offerNumber,
+          offerNumberInQuotation: revision.offerNumberInQuotation,
+          totalPrice: revision.totalPrice,
+          totalNetto: revision.totalNetto,
+          totalDiscount: revision.totalDiscount,
+          excludePPN: revision.excludePPN,
+          isFullyAccepted: revision.isFullyAccepted,
+          isPartiallyAccepted: revision.isPartiallyAccepted,
+          acceptedItemsCount: revision.acceptedItemsCount,
+          totalItemsCount: revision.totalItemsCount,
+          revision: revision.revision,
+          notes: revision.notes,
+          notesImages: revision.notesImages || [],
+          offerItems: revision.offerItems || []
+        }))
+      }))
+    }));
+    
+    res.json({
+      success: true,
+      data: simplifiedQuotations,
+      pagination: result.pagination,
+      message: 'All quotations retrieved successfully'
+    });
+  } catch (error) {
+    console.error('Error fetching all quotations:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch all quotations'
     });
   }
 });
