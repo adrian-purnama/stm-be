@@ -1,5 +1,29 @@
 const mongoose = require('mongoose');
 
+// Specification Item Schema
+const specificationItemSchema = new mongoose.Schema({
+  name: {
+    type: String,
+    required: true,
+    trim: true
+  },
+  specification: {
+    type: String,
+    required: true,
+    trim: true
+  }
+}, { _id: false });
+
+// Specification Category Schema
+const specificationCategorySchema = new mongoose.Schema({
+  category: {
+    type: String,
+    required: true,
+    trim: true
+  },
+  items: [specificationItemSchema]
+}, { _id: false });
+
 // Truck Type Schema
 const truckTypeSchema = new mongoose.Schema({
   name: {
@@ -20,6 +44,8 @@ const truckTypeSchema = new mongoose.Schema({
     enum: ['Commercial', 'Construction', 'Transportation', 'Specialized', 'Other'],
     default: 'Commercial'
   },
+  
+  defaultSpecifications: [specificationCategorySchema],
   
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,

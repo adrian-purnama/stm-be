@@ -31,11 +31,38 @@ router.get('/', authenticateToken, authorize(['placeholder_test']), async (req, 
   try {
     const { page = 1, limit = 10, ...filters } = req.query;
     
-    // Add user filter to ensure users only see their own quotations
-    const userFilters = {
+    // Check if user has quotation_requester permission
+    const user = await require('../models/user.model').findById(req.user.userId).populate('permissions');
+    const canRequestQuotation = user.permissions.some(p => p.name === 'quotation_requester');
+    
+    let userFilters = {
       ...filters,
       userId: req.user.userId
     };
+    
+    // If user is a requester, also include quotations created from their RFQs
+    if (canRequestQuotation) {
+      const { RFQ } = require('../models/rfq.model');
+      
+      // Find RFQs where this user is the requester and quotation was created
+      const rfqsWithQuotations = await RFQ.find({
+        requesterId: req.user.userId,
+        quotationId: { $exists: true, $ne: null }
+      }).select('quotationId');
+      
+      const quotationIds = rfqsWithQuotations.map(rfq => rfq.quotationId);
+      
+      if (quotationIds.length > 0) {
+        // Include both user's own quotations and quotations from their RFQs
+        userFilters = {
+          ...filters,
+          $or: [
+            { userId: req.user.userId },
+            { _id: { $in: quotationIds } }
+          ]
+        };
+      }
+    }
     
     const result = await getQuotations(userFilters, { page: parseInt(page), limit: parseInt(limit) });
     
@@ -256,11 +283,72 @@ router.get('/debug/offer-items', authenticateToken, authorize(['placeholder_test
 });
 
 // Create new quotation (header + first offer)
-router.post('/', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
+router.post('/', authenticateToken, authorize(['quotation_create']), async (req, res) => {
   try {
-    const { headerData, offerData } = req.body;
+    const { headerData, offerData, rfqId } = req.body;
     
+    // If rfqId is provided, validate and update RFQ status
+    if (rfqId) {
+      const { RFQ } = require('../models/rfq.model');
+      const rfq = await RFQ.findById(rfqId);
+      
+      if (!rfq) {
+        return res.status(404).json({
+          success: false,
+          message: 'RFQ not found'
+        });
+      }
+      
+      if (rfq.status !== 'approved') {
+        return res.status(400).json({
+          success: false,
+          message: 'RFQ must be approved before creating quotation'
+        });
+      }
+      
+      if (rfq.quotationCreatorId.toString() !== req.user.userId.toString()) {
+        return res.status(403).json({
+          success: false,
+          message: 'You are not authorized to create quotation for this RFQ'
+        });
+      }
+    }
     
+    // If RFQ was provided, get RFQ data and transfer it to offerData
+    if (rfqId) {
+      const { RFQ, RFQItem } = require('../models/rfq.model');
+      
+      // Get RFQ with populated items
+      const rfq = await RFQ.findById(rfqId).populate('items');
+      
+      if (rfq) {
+        // Transfer RFQ data to header data if not already provided
+        if (!headerData.customerName) {
+          headerData.customerName = rfq.customerName;
+          headerData.contactPerson = rfq.contactPerson;
+        }
+        
+        // Transfer RFQ items to offer items
+        if (rfq.items && rfq.items.length > 0) {
+          const rfqOfferItems = rfq.items.map((rfqItem, index) => ({
+            itemNumber: index + 1,
+            karoseri: rfqItem.karoseri,
+            chassis: rfqItem.chassis,
+            drawingSpecification: rfqItem.drawingSpecification,
+            specifications: rfqItem.specifications, // Already in the correct format
+            price: rfqItem.price,
+            netto: rfqItem.priceNet,  // Map RFQ priceNet to offer item netto
+            discountType: 'percentage',  // Default discount type
+            discountValue: 0,            // Default discount value
+            notes: rfqItem.notes
+          }));
+          
+          // Replace offerData.offerItems with RFQ items
+          offerData.offerItems = rfqOfferItems;
+        }
+      }
+    }
+
     // Create quotation header
     const header = await createQuotationHeader({
       ...headerData,
@@ -268,12 +356,24 @@ router.post('/', authenticateToken, authorize(['placeholder_test']), async (req,
       marketingName: req.user.fullName ? req.user.fullName.split(' ')[0] : req.user.email
     });
 
-    // Create first offer
+    // Create first offer (now with RFQ data if applicable)
     const offer = await createQuotationOffer(header.quotationNumber, {
       ...offerData,
       userId: req.user.userId,
       marketingName: req.user.fullName ? req.user.fullName.split(' ')[0] : req.user.email
     });
+
+    // If RFQ was provided, update its status
+    if (rfqId) {
+      const { RFQ } = require('../models/rfq.model');
+      
+      // Update RFQ status and link to quotation
+      await RFQ.findByIdAndUpdate(rfqId, {
+        status: 'quotation_created',
+        quotationId: header._id,
+        quotationCreatedAt: new Date()
+      });
+    }
 
     res.status(201).json({
       success: true,

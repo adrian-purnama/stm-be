@@ -32,18 +32,26 @@ const offerItemSchema = new mongoose.Schema({
     ref: 'DrawingSpecification'
   },
 
-  // Specification mode: 'simple' for array of strings, 'complex' for array of objects
-  specificationMode: {
-    type: String,
-    enum: ['simple', 'complex'],
-    default: 'simple'
-  },
-
-  // Specifications - can be either simple strings or complex objects with label/value
-  specifications: {
-    type: mongoose.Schema.Types.Mixed,
-    default: []
-  },
+  // Specifications using the same structure as RFQ (category-based with key-value pairs)
+  specifications: [{
+    category: {
+      type: String,
+      required: true,
+      trim: true
+    },
+    items: [{
+      name: {
+        type: String,
+        required: true,
+        trim: true
+      },
+      specification: {
+        type: String,
+        required: true,
+        trim: true
+      }
+    }]
+  }],
 
   // Financial fields - specific to this item
   price: {

@@ -119,12 +119,51 @@ router.get('/:id', authenticateToken, authorize(['truck_view']), async (req, res
  */
 router.post('/', authenticateToken, authorize(['truck_create']), async (req, res) => {
   try {
+    const { name, description, category, defaultSpecifications } = req.body;
+    
+    // Validate required fields
+    if (!name || !name.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Truck type name is required'
+      });
+    }
+
+    // Validate defaultSpecifications structure if provided
+    if (defaultSpecifications && Array.isArray(defaultSpecifications)) {
+      for (const spec of defaultSpecifications) {
+        if (!spec.category || !spec.category.trim()) {
+          return res.status(400).json({
+            success: false,
+            message: 'Each specification category must have a category name'
+          });
+        }
+        
+        if (!spec.items || !Array.isArray(spec.items)) {
+          return res.status(400).json({
+            success: false,
+            message: 'Each specification category must have items array'
+          });
+        }
+        
+        for (const item of spec.items) {
+          if (!item.name || !item.name.trim() || !item.specification || !item.specification.trim()) {
+            return res.status(400).json({
+              success: false,
+              message: 'Each specification item must have both name and specification'
+            });
+          }
+        }
+      }
+    }
     
     const truckTypeData = {
-      ...req.body,
+      name: name.trim(),
+      description: description ? description.trim() : '',
+      category: category || 'Commercial',
+      defaultSpecifications: defaultSpecifications || [],
       createdBy: req.user.userId
     };
-
 
     const truckType = new TruckType(truckTypeData);
     await truckType.save();
@@ -170,11 +209,52 @@ router.post('/', authenticateToken, authorize(['truck_create']), async (req, res
  * Update existing truck type
  * Required Permission: truck_update
  */
-router.put('/:id', authenticateToken, authorize(['truck_update']), async (req, res) => {
+router.put('/:id', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
   try {
     const { id } = req.params;
+    const { name, description, category, defaultSpecifications } = req.body;
+    
+    // Validate required fields
+    if (name !== undefined && (!name || !name.trim())) {
+      return res.status(400).json({
+        success: false,
+        message: 'Truck type name is required'
+      });
+    }
+
+    // Validate defaultSpecifications structure if provided
+    if (defaultSpecifications && Array.isArray(defaultSpecifications)) {
+      for (const spec of defaultSpecifications) {
+        if (!spec.category || !spec.category.trim()) {
+          return res.status(400).json({
+            success: false,
+            message: 'Each specification category must have a category name'
+          });
+        }
+        
+        if (!spec.items || !Array.isArray(spec.items)) {
+          return res.status(400).json({
+            success: false,
+            message: 'Each specification category must have items array'
+          });
+        }
+        
+        for (const item of spec.items) {
+          if (!item.name || !item.name.trim() || !item.specification || !item.specification.trim()) {
+            return res.status(400).json({
+              success: false,
+              message: 'Each specification item must have both name and specification'
+            });
+          }
+        }
+      }
+    }
+
     const updateData = {
-      ...req.body,
+      ...(name !== undefined && { name: name.trim() }),
+      ...(description !== undefined && { description: description ? description.trim() : '' }),
+      ...(category !== undefined && { category }),
+      ...(defaultSpecifications !== undefined && { defaultSpecifications }),
       lastModifiedBy: req.user.userId
     };
 
@@ -199,6 +279,25 @@ router.put('/:id', authenticateToken, authorize(['truck_update']), async (req, r
     });
   } catch (error) {
     // console.error('Error updating truck type:', error);
+    
+    // Handle specific validation errors
+    if (error.name === 'ValidationError') {
+      const validationErrors = Object.values(error.errors).map(err => err.message);
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed',
+        errors: validationErrors
+      });
+    }
+    
+    // Handle duplicate key error
+    if (error.code === 11000) {
+      return res.status(400).json({
+        success: false,
+        message: 'Truck type name already exists'
+      });
+    }
+    
     res.status(400).json({
       success: false,
       message: error.message
