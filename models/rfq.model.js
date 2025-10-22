@@ -137,6 +137,33 @@ const rfqSchema = new mongoose.Schema({
     }
   },
   
+  // Delivery location
+  deliveryLocation: {
+    type: String,
+    required: true,
+    trim: true
+  },
+  
+  // Competitor information
+  competitor: {
+    type: String,
+    required: true,
+    trim: true
+  },
+  
+  // Project flags
+  canMake: {
+    type: Boolean,
+    required: true,
+    default: false
+  },
+  
+  projectOngoing: {
+    type: Boolean,
+    required: true,
+    default: false
+  },
+  
   // Customer information - aligned with quotation model
   customerName: {
     type: String,

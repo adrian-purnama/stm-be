@@ -185,6 +185,10 @@ router.post('/', authenticateToken, authorize(['quotation_requester']), async (r
       priority,
       expectedDeliveryDate,
       confidenceRate,
+      deliveryLocation,
+      competitor,
+      canMake,
+      projectOngoing,
       items
     } = req.body;
     const requesterId = req.user.userId;
@@ -200,6 +204,22 @@ router.post('/', authenticateToken, authorize(['quotation_requester']), async (r
     
     if (!Number.isInteger(parseFloat(confidenceRate))) {
       return sendErrorResponse(res, 400, 'Confidence rate must be an integer');
+    }
+    
+    if (!deliveryLocation || !deliveryLocation.trim()) {
+      return sendErrorResponse(res, 400, 'Delivery location is required');
+    }
+    
+    if (!competitor || !competitor.trim()) {
+      return sendErrorResponse(res, 400, 'Competitor is required');
+    }
+    
+    if (canMake === undefined || canMake === null || typeof canMake !== 'boolean') {
+      return sendErrorResponse(res, 400, 'Can Make flag is required and must be a boolean');
+    }
+    
+    if (projectOngoing === undefined || projectOngoing === null || typeof projectOngoing !== 'boolean') {
+      return sendErrorResponse(res, 400, 'Project Ongoing flag is required and must be a boolean');
     }
     
     if (!items || !Array.isArray(items) || items.length === 0) {
@@ -234,7 +254,11 @@ router.post('/', authenticateToken, authorize(['quotation_requester']), async (r
       contactPerson,
       priority: priority || 'medium',
       expectedDeliveryDate: expectedDeliveryDate ? new Date(expectedDeliveryDate) : undefined,
-      confidenceRate: parseInt(confidenceRate)
+      confidenceRate: parseInt(confidenceRate),
+      deliveryLocation: deliveryLocation.trim(),
+      competitor: competitor.trim(),
+      canMake: Boolean(canMake),
+      projectOngoing: Boolean(projectOngoing)
     };
     
     const rfq = await createRFQ(rfqData);
