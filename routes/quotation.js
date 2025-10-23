@@ -1,3 +1,9 @@
+// =============================================================================
+// QUOTATION MANAGEMENT ROUTES
+// =============================================================================
+// This module handles all quotation-related endpoints including creation,
+// retrieval, updates, and management of quotations and their offers.
+
 const express = require('express');
 const router = express.Router();
 const { authenticateToken, authorize } = require('../middleware/auth');
@@ -227,6 +233,11 @@ router.get('/', authenticateToken, authorize(['quotation_view']), async (req, re
 });
 
 // Get all quotations for users with all_quotation_viewer permission
+/**
+ * GET /api/quotations/all
+ * Permission: all_quotation_viewer
+ * Description: Get all quotations regardless of user role (for viewers with special permission)
+ */
 router.get('/all', authenticateToken, authorize(['all_quotation_viewer']), async (req, res) => {
   try {
     const { page = 1, limit = 10, filterMode = 'all_viewer', ...filters } = req.query;
@@ -466,6 +477,15 @@ router.get('/debug/offer-items', authenticateToken, authorize(['quotation_view']
 });
 
 // Create new quotation (header + first offer)
+// =============================================================================
+// QUOTATION CRUD ROUTES
+// =============================================================================
+
+/**
+ * POST /api/quotations
+ * Permission: quotation_create
+ * Description: Create a new quotation
+ */
 router.post('/', authenticateToken, authorize(['quotation_create']), async (req, res) => {
   try {
     const { headerData, offerData, rfqId } = req.body;

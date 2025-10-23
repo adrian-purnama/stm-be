@@ -13,7 +13,7 @@ const { sendErrorResponse, sendSuccessResponse, handleValidationError, ERROR_MES
  * Get all permission categories
  * Required Permission: permission_view
  */
-router.get('/', authenticateToken, authorize(['permission_view']), async (req, res) => {
+router.get('/', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
   try {
     const categories = await PermissionCategory.find({ isActive: true })
       .populate('createdBy', 'fullName email')
@@ -30,7 +30,7 @@ router.get('/', authenticateToken, authorize(['permission_view']), async (req, r
  * Get specific permission category
  * Required Permission: permission_view
  */
-router.get('/:id', authenticateToken, authorize(['permission_view']), async (req, res) => {
+router.get('/:id', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
   try {
     const category = await PermissionCategory.findById(req.params.id)
       .populate('createdBy', 'fullName email');
@@ -50,7 +50,7 @@ router.get('/:id', authenticateToken, authorize(['permission_view']), async (req
  * Create new permission category
  * Required Permission: permission_create
  */
-router.post('/', authenticateToken, authorize(['permission_create']), async (req, res) => {
+router.post('/', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
   try {
     const { name } = req.body;
 
@@ -76,7 +76,7 @@ router.post('/', authenticateToken, authorize(['permission_create']), async (req
  * Update permission category
  * Required Permission: permission_edit
  */
-router.put('/:id', authenticateToken, authorize(['permission_edit']), async (req, res) => {
+router.put('/:id', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
   try {
     const { name } = req.body;
 
@@ -104,7 +104,7 @@ router.put('/:id', authenticateToken, authorize(['permission_edit']), async (req
  * Delete permission category (soft delete)
  * Required Permission: permission_delete
  */
-router.delete('/:id', authenticateToken, authorize(['permission_delete']), async (req, res) => {
+router.delete('/:id', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
   try {
     const category = await PermissionCategory.findByIdAndUpdate(
       req.params.id,

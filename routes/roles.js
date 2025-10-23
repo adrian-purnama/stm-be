@@ -14,7 +14,7 @@ const { sendErrorResponse, sendSuccessResponse, handleValidationError, ERROR_MES
  * Get all active roles with their permissions
  * Required Permission: role_view
  */
-router.get('/', authenticateToken, authorizeAll(), async (req, res) => {
+router.get('/', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
   try {
     const roles = await Role.find({ isActive: true })
       .populate('createdBy', 'fullName email')
@@ -33,7 +33,7 @@ router.get('/', authenticateToken, authorizeAll(), async (req, res) => {
  * Get specific role by ID
  * Required Permission: role_view
  */
-router.get('/:id', authenticateToken, authorizeAll(), async (req, res) => {
+router.get('/:id', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
   try {
     const role = await Role.findById(req.params.id)
       .populate('createdBy', 'fullName email');
@@ -53,7 +53,7 @@ router.get('/:id', authenticateToken, authorizeAll(), async (req, res) => {
  * Create new role with specific permissions
  * Required Permission: role_create
  */
-router.post('/', authenticateToken, authorizeAll(), async (req, res) => {
+router.post('/', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
   try {
     const { name, displayName, description, permissions } = req.body;
 
@@ -93,7 +93,7 @@ router.post('/', authenticateToken, authorizeAll(), async (req, res) => {
  * Update existing role
  * Required Permission: role_update
  */
-router.put('/:id', authenticateToken, authorizeAll(), async (req, res) => {
+router.put('/:id', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
   console.log('PUT /api/roles/:id - Request body:', req.body);
   try {
     const { id } = req.params;
@@ -143,7 +143,7 @@ router.put('/:id', authenticateToken, authorizeAll(), async (req, res) => {
  * Delete role (soft delete by setting isActive to false)
  * Required Permission: role_delete
  */
-router.delete('/:id', authenticateToken, authorizeAll(), async (req, res) => {
+router.delete('/:id', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -169,7 +169,7 @@ router.delete('/:id', authenticateToken, authorizeAll(), async (req, res) => {
  * Assign role to user
  * Required Permission: user_manage
  */
-router.post('/:roleId/assign/:userId', authenticateToken, authorizeAll(), async (req, res) => {
+router.post('/:roleId/assign/:userId', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
   try {
     const { roleId, userId } = req.params;
 
@@ -202,7 +202,7 @@ router.post('/:roleId/assign/:userId', authenticateToken, authorizeAll(), async 
  * Remove role from user
  * Required Permission: user_manage
  */
-router.delete('/:roleId/remove/:userId', authenticateToken,authorizeAll(), async (req, res) => {
+router.delete('/:roleId/remove/:userId', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
   try {
     const { roleId, userId } = req.params;
 
@@ -225,7 +225,7 @@ router.delete('/:roleId/remove/:userId', authenticateToken,authorizeAll(), async
  * Get all users with specific role
  * Required Permission: role_view
  */
-router.get('/:id/users', authenticateToken, authorizeAll(), async (req, res) => {
+router.get('/:id/users', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
   try {
     const { id } = req.params;
 

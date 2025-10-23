@@ -1,3 +1,9 @@
+// =============================================================================
+// REQUEST FOR QUOTATION (RFQ) ROUTES
+// =============================================================================
+// This module handles all RFQ-related endpoints including creation, retrieval,
+// updates, approval/rejection, and management of RFQ items.
+
 const express = require('express');
 const router = express.Router();
 const { RFQ, RFQItem } = require('../models/rfq.model');
@@ -24,6 +30,11 @@ const {
 
 
 // GET /api/rfq/approved-for-quotation - get approved RFQs for quotation creation
+/**
+ * GET /api/rfq/approved-for-quotation
+ * Permission: quotation_create
+ * Description: Get approved RFQs available for quotation creation
+ */
 router.get('/approved-for-quotation', authenticateToken, authorize(['quotation_create']), async (req, res) => {
   try {
     const userId = req.user.userId;
@@ -47,6 +58,15 @@ router.get('/approved-for-quotation', authenticateToken, authorize(['quotation_c
 });
 
 // GET /api/rfq - get RFQs based on user role
+// =============================================================================
+// RFQ CRUD ROUTES
+// =============================================================================
+
+/**
+ * GET /api/rfq
+ * Permission: Any authenticated user
+ * Description: Get RFQs with role-based filtering
+ */
 router.get('/', authenticateToken, async (req, res) => {
   try {
     const { status, page = 1, limit = 10 } = req.query;
@@ -133,6 +153,11 @@ router.get('/quotation-creators', authenticateToken, async (req, res) => {
 });
 
 // POST /api/rfq - create new RFQ
+/**
+ * POST /api/rfq
+ * Permission: quotation_requester
+ * Description: Create a new RFQ
+ */
 router.post('/', authenticateToken, authorize(['quotation_requester']), async (req, res) => {
   try {
     const { 
@@ -262,6 +287,15 @@ router.post('/', authenticateToken, authorize(['quotation_requester']), async (r
 });
 
 // PATCH /api/rfq/:id/approve - approve RFQ (Bid decision)
+// =============================================================================
+// RFQ APPROVAL/REJECTION ROUTES
+// =============================================================================
+
+/**
+ * PATCH /api/rfq/:id/approve
+ * Permission: approve_rfq
+ * Description: Approve an RFQ
+ */
 router.patch('/:id/approve', authenticateToken, authorize(['approve_rfq']), async (req, res) => {
   try {
     const { id } = req.params;
@@ -336,6 +370,11 @@ router.patch('/:id/approve', authenticateToken, authorize(['approve_rfq']), asyn
 });
 
 // PATCH /api/rfq/:id/reject - reject RFQ (No Bid decision)
+/**
+ * PATCH /api/rfq/:id/reject
+ * Permission: approve_rfq
+ * Description: Reject an RFQ
+ */
 router.patch('/:id/reject', authenticateToken, authorize(['approve_rfq']), async (req, res) => {
   try {
     const { id } = req.params;
