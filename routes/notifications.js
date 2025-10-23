@@ -1,11 +1,11 @@
 const express = require('express');
 const router = express.Router();
 const Notification = require('../models/notification.model');
-const { authenticateToken } = require('../middleware/auth');
+const { authenticateToken, authorize } = require('../middleware/auth');
 const { sendSuccessResponse, sendErrorResponse } = require('../utils/errorHandler');
 
 // GET /api/notifications - list current user's notifications with pagination
-router.get('/', authenticateToken, async (req, res) => {
+router.get('/', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
   try {
     const page = Math.max(1, parseInt(req.query.page) || 1);
     const limit = Math.min(50, Math.max(1, parseInt(req.query.limit) || 10));
@@ -37,7 +37,7 @@ router.get('/', authenticateToken, async (req, res) => {
 });
 
 // GET /api/notifications/unread-count
-router.get('/unread-count', authenticateToken, async (req, res) => {
+router.get('/unread-count', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
   try {
     const count = await Notification.countDocuments({ userId: req.user.userId, isRead: false });
     return sendSuccessResponse(res, 200, 'Unread count', { count });
@@ -47,7 +47,7 @@ router.get('/unread-count', authenticateToken, async (req, res) => {
 });
 
 // PATCH /api/notifications/:id/read - mark as read
-router.patch('/:id/read', authenticateToken, async (req, res) => {
+router.patch('/:id/read', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
   try {
     const { id } = req.params;
     const notif = await Notification.findOneAndUpdate({ _id: id, userId: req.user.userId }, { isRead: true }, { new: true });

@@ -14,7 +14,7 @@ const { sendErrorResponse, sendSuccessResponse, handleValidationError, ERROR_MES
  * Get all permissions with their categories
  * Required Permission: permission_view
  */
-router.get('/', authenticateToken, authorize(['permission_view']), async (req, res) => {
+router.get('/', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
   try {
     const permissions = await Permission.find({ isActive: true })
       .populate('category', 'name')
@@ -32,7 +32,7 @@ router.get('/', authenticateToken, authorize(['permission_view']), async (req, r
  * Get permissions by category
  * Required Permission: permission_view
  */
-router.get('/category/:categoryId', authenticateToken, authorize(['permission_view']), async (req, res) => {
+router.get('/category/:categoryId', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
   try {
     const permissions = await Permission.find({ 
       category: req.params.categoryId,
@@ -53,7 +53,7 @@ router.get('/category/:categoryId', authenticateToken, authorize(['permission_vi
  * Get specific permission
  * Required Permission: permission_view
  */
-router.get('/:id', authenticateToken, authorize(['permission_view']), async (req, res) => {
+router.get('/:id', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
   try {
     const permission = await Permission.findById(req.params.id)
       .populate('category', 'name')
@@ -74,7 +74,7 @@ router.get('/:id', authenticateToken, authorize(['permission_view']), async (req
  * Create new permission
  * Required Permission: permission_create
  */
-router.post('/', authenticateToken, authorize(['permission_create']), async (req, res) => {
+router.post('/', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
   try {
     console.log('Creating permission with data:', req.body);
     const { name, displayName, description, categoryId, categoryName, type, includes } = req.body;
@@ -139,7 +139,7 @@ router.post('/', authenticateToken, authorize(['permission_create']), async (req
  * Update permission
  * Required Permission: permission_edit
  */
-router.put('/:id', authenticateToken, authorize(['permission_edit']), async (req, res) => {
+router.put('/:id', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
   try {
     const { name, displayName, description, categoryId, type, includes } = req.body;
 
@@ -242,7 +242,7 @@ router.put('/:id', authenticateToken, authorize(['permission_edit']), async (req
  * Delete permission with cascade deletion
  * Required Permission: permission_delete
  */
-router.delete('/:id', authenticateToken, authorize(['permission_delete']), async (req, res) => {
+router.delete('/:id', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
   try {
     const permissionId = req.params.id;
     

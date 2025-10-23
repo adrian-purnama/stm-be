@@ -1,3 +1,9 @@
+// =============================================================================
+// QUOTATION MANAGEMENT ROUTES
+// =============================================================================
+// This module handles all quotation-related endpoints including creation,
+// retrieval, updates, and management of quotations and their offers.
+
 const express = require('express');
 const router = express.Router();
 const { authenticateToken, authorize } = require('../middleware/auth');
@@ -22,11 +28,15 @@ const {
   migrateOfferNumbers
 } = require('../utils/quotationHelper');
 
-// ============================================================================
-// QUOTATION MANAGEMENT ROUTES
-// ============================================================================
+// =============================================================================
+// QUOTATION LISTING ROUTES
+// =============================================================================
 
-// Get all quotations for the authenticated user
+/**
+ * GET /api/quotations
+ * Permission: placeholder_test (temporary - should be quotation_view)
+ * Description: Get filtered quotations based on user role and permissions
+ */
 router.get('/', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
   try {
     const { page = 1, limit = 10, filterMode = 'all', ...filters } = req.query;
@@ -202,6 +212,11 @@ router.get('/', authenticateToken, authorize(['placeholder_test']), async (req, 
 });
 
 // Get all quotations for users with all_quotation_viewer permission
+/**
+ * GET /api/quotations/all
+ * Permission: all_quotation_viewer
+ * Description: Get all quotations regardless of user role (for viewers with special permission)
+ */
 router.get('/all', authenticateToken, authorize(['all_quotation_viewer']), async (req, res) => {
   try {
     const { page = 1, limit = 10, ...filters } = req.query;
@@ -438,6 +453,15 @@ router.get('/debug/offer-items', authenticateToken, authorize(['placeholder_test
 });
 
 // Create new quotation (header + first offer)
+// =============================================================================
+// QUOTATION CRUD ROUTES
+// =============================================================================
+
+/**
+ * POST /api/quotations
+ * Permission: quotation_create
+ * Description: Create a new quotation
+ */
 router.post('/', authenticateToken, authorize(['quotation_create']), async (req, res) => {
   try {
     const { headerData, offerData, rfqId } = req.body;
@@ -545,6 +569,15 @@ router.post('/', authenticateToken, authorize(['quotation_create']), async (req,
 });
 
 // Get specific quotation by ID
+// =============================================================================
+// QUOTATION RETRIEVAL ROUTES
+// =============================================================================
+
+/**
+ * GET /api/quotations/by-id/:quotationId
+ * Permission: placeholder_test (temporary - should be quotation_view)
+ * Description: Get quotation by ID
+ */
 router.get('/by-id/:quotationId', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
   try {
     const { quotationId } = req.params;
@@ -582,6 +615,11 @@ router.get('/by-id/:quotationId', authenticateToken, authorize(['placeholder_tes
 });
 
 // Get specific quotation by quotation number
+/**
+ * GET /api/quotations/:quotationNumber
+ * Permission: placeholder_test (temporary - should be quotation_view)
+ * Description: Get quotation by quotation number
+ */
 router.get('/:quotationNumber', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
   try {
     const { quotationNumber } = req.params;
@@ -603,6 +641,15 @@ router.get('/:quotationNumber', authenticateToken, authorize(['placeholder_test'
 });
 
 // Update quotation header
+// =============================================================================
+// QUOTATION UPDATE ROUTES
+// =============================================================================
+
+/**
+ * PUT /api/quotations/:quotationNumber
+ * Permission: placeholder_test (temporary - should be quotation_edit)
+ * Description: Update quotation header
+ */
 router.put('/:quotationNumber', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
   try {
     const { quotationNumber } = req.params;
@@ -627,6 +674,11 @@ router.put('/:quotationNumber', authenticateToken, authorize(['placeholder_test'
 });
 
 // Delete quotation (header + all offers + all items)
+/**
+ * DELETE /api/quotations/:quotationNumber
+ * Permission: placeholder_test (temporary - should be quotation_delete)
+ * Description: Delete quotation
+ */
 router.delete('/:quotationNumber', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
   try {
     const { quotationNumber } = req.params;
@@ -679,6 +731,11 @@ router.delete('/:quotationNumber', authenticateToken, authorize(['placeholder_te
 // ============================================================================
 
 // Update quotation status
+/**
+ * PATCH /api/quotations/:quotationNumber/status
+ * Permission: placeholder_test (temporary - should be quotation_edit)
+ * Description: Update quotation status
+ */
 router.patch('/:quotationNumber/status', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
   try {
     const { quotationNumber } = req.params;
@@ -759,6 +816,15 @@ router.patch('/:quotationNumber/status', authenticateToken, authorize(['placehol
 // ============================================================================
 
 // Get all offers for a quotation
+// =============================================================================
+// QUOTATION OFFER ROUTES
+// =============================================================================
+
+/**
+ * GET /api/quotations/:quotationNumber/offers
+ * Permission: placeholder_test (temporary - should be quotation_view)
+ * Description: Get all offers for a quotation
+ */
 router.get('/:quotationNumber/offers', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
   try {
     const { quotationNumber } = req.params;

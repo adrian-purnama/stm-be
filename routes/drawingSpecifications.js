@@ -1,3 +1,9 @@
+// =============================================================================
+// DRAWING SPECIFICATION MANAGEMENT ROUTES
+// =============================================================================
+// This module handles all drawing specification-related endpoints including
+// creation, retrieval, updates, file uploads, and management of drawing specifications.
+
 const express = require('express');
 const multer = require('multer');
 const path = require('path');
@@ -36,6 +42,15 @@ const upload = multer({
 });
 
 // Get all drawing specifications
+// =============================================================================
+// DRAWING SPECIFICATION CRUD ROUTES
+// =============================================================================
+
+/**
+ * GET /api/drawing-specifications
+ * Permission: placeholder_test (temporary - should be drawing_view)
+ * Description: Get all drawing specifications with pagination and filtering
+ */
 router.get('/', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
   try {
     const { 
@@ -89,6 +104,11 @@ router.get('/', authenticateToken, authorize(['placeholder_test']), async (req, 
 });
 
 // Get specific drawing specification
+/**
+ * GET /api/drawing-specifications/:id
+ * Permission: placeholder_test (temporary - should be drawing_view)
+ * Description: Get specific drawing specification by ID
+ */
 router.get('/:id', authenticateToken,authorize(['placeholder_test']), async (req, res) => {
   try {
     const { id } = req.params;
@@ -120,6 +140,11 @@ router.get('/:id', authenticateToken,authorize(['placeholder_test']), async (req
 });
 
 // Create new drawing specification with optional file uploads
+/**
+ * POST /api/drawing-specifications
+ * Permission: placeholder_test (temporary - should be drawing_create)
+ * Description: Create new drawing specification with file upload
+ */
 router.post('/', authenticateToken, authorize(['placeholder_test']), upload.single('file'), async (req, res) => {
   try {
     const { drawingNumber, truckType } = req.body;
