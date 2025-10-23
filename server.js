@@ -15,9 +15,7 @@ const PORT = process.env.PORT || 5000;
 // CORS configuration - allow specific origins
 app.use(cors({
   origin: [
-    process.env.FRONTEND_URL,
-    "https://stm-uat.onrender.com",
-    "http://localhost:5173"
+    process.env.FRONTEND_URL
   ],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization'],
@@ -28,13 +26,28 @@ app.use(cors({
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Database connection
+
+//MONGODB connection
+let mongoURI;
+
+if (process.env.NODE_ENV_BUILD === 'production') {
+  mongoURI = process.env.MONGODB_PROD_URL;
+  console.log('🚀 Using PRODUCTION database');
+} else if (process.env.NODE_ENV_BUILD === 'preprod' || process.env.NODE_ENV_BUILD === 'development') {
+  mongoURI = process.env.MONGODB_PREPROD_URL;
+  console.log('🧪 Using PREPRODUCTION database');
+} else {
+  mongoURI = process.env.MONGODB_PREPROD_URL; // default to preprod for local dev
+  console.log('🧰 Using DEVELOPMENT (PREPROD) database');
+}
+
 const connectDB = async () => {
   try {
-    const mongoURI = process.env.MONGODB_URI;
+    //const mongoURI = process.env.MONGODB_URI;
     await mongoose.connect(mongoURI, {
       useNewUrlParser: true,
       useUnifiedTopology: true,
+      dbName: 'app'
     });
     console.log('✅ Connected to MongoDB successfully');
   } catch (error) {
@@ -82,7 +95,7 @@ app.use((err, req, res, next) => {
   res.status(500).json({
     success: false,
     message: 'Internal server error',
-    error: process.env.NODE_ENV === 'development' ? err.message : 'Something went wrong'
+    error: process.env.NODE_ENV_BUILD === 'development' ? err.message : 'Something went wrong'
   });
 });
 

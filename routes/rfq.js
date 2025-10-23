@@ -5,6 +5,8 @@ const User = require('../models/user.model');
 const { authenticateToken, authorize } = require('../middleware/auth');
 const { sendSuccessResponse, sendErrorResponse } = require('../utils/errorHandler');
 const { addNotification } = require('../utils/notificationHelper');
+const { sendRFQNotificationEmail } = require('../utils/emailUtils');
+const { hasPermission } = require('../utils/permissionHelper');
 const {
   createRFQ,
   getRFQById,
@@ -20,49 +22,6 @@ const {
   deleteRFQItem
 } = require('../utils/rfqHelper');
 
-// GET /api/rfq/approvers - get users with approve_rfq permission
-router.get('/approvers', authenticateToken, async (req, res) => {
-  try {
-    const approvers = await User.find()
-      .populate('permissions')
-      .where('permissions').in(
-        await User.db.collection('permissions').distinct('_id', { name: 'approve_rfq' })
-      )
-      .select('_id email fullName')
-      .sort({ fullName: 1 });
-
-    res.status(200).json({
-      success: true,
-      data: { approvers },
-      message: 'Approvers fetched successfully'
-    });
-  } catch (error) {
-    console.error('Error fetching approvers:', error);
-    sendErrorResponse(res, 500, 'Failed to fetch approvers');
-  }
-});
-
-// GET /api/rfq/quotation-creators - get users with quotation_create permission
-router.get('/quotation-creators', authenticateToken, async (req, res) => {
-  try {
-    const quotationCreators = await User.find()
-      .populate('permissions')
-      .where('permissions').in(
-        await User.db.collection('permissions').distinct('_id', { name: 'quotation_create' })
-      )
-      .select('_id email fullName')
-      .sort({ fullName: 1 });
-
-    res.status(200).json({
-      success: true,
-      data: { quotationCreators },
-      message: 'Quotation creators fetched successfully'
-    });
-  } catch (error) {
-    console.error('Error fetching quotation creators:', error);
-    sendErrorResponse(res, 500, 'Failed to fetch quotation creators');
-  }
-});
 
 // GET /api/rfq/approved-for-quotation - get approved RFQs for quotation creation
 router.get('/approved-for-quotation', authenticateToken, authorize(['quotation_create']), async (req, res) => {
@@ -93,11 +52,11 @@ router.get('/', authenticateToken, async (req, res) => {
     const { status, page = 1, limit = 10 } = req.query;
     const userId = req.user.userId;
     
-    // Check user permissions
+    // Check user permissions using proper permission helper
     const user = await User.findById(userId).populate('permissions');
-    const canApprove = user.permissions.some(p => p.name === 'approve_rfq');
-    const canCreateQuotation = user.permissions.some(p => p.name === 'quotation_create');
-    const canRequestQuotation = user.permissions.some(p => p.name === 'quotation_requester');
+    const canApprove = hasPermission(user, 'approve_rfq');
+    const canCreateQuotation = hasPermission(user, 'quotation_create');
+    const canRequestQuotation = hasPermission(user, 'quotation_requester');
     
     let query = {};
     let userRole = 'viewer';
@@ -139,7 +98,7 @@ router.get('/approvers', authenticateToken, async (req, res) => {
     const approvers = await User.find({})
       .populate('permissions')
       .then(users => users.filter(user => 
-        user.permissions.some(p => p.name === 'approve_rfq')
+        hasPermission(user, 'approve_rfq')
       ))
       .then(users => users.map(user => ({
         _id: user._id,
@@ -159,7 +118,7 @@ router.get('/quotation-creators', authenticateToken, async (req, res) => {
     const quotationCreators = await User.find({})
       .populate('permissions')
       .then(users => users.filter(user => 
-        user.permissions.some(p => p.name === 'quotation_create')
+        hasPermission(user, 'quotation_create')
       ))
       .then(users => users.map(user => ({
         _id: user._id,
@@ -235,13 +194,13 @@ router.post('/', authenticateToken, authorize(['quotation_requester']), async (r
     
     // Validate that approver has approve_rfq permission
     const approver = await User.findById(approverId).populate('permissions');
-    if (!approver || !approver.permissions.some(p => p.name === 'approve_rfq')) {
+    if (!approver || !hasPermission(approver, 'approve_rfq')) {
       return sendErrorResponse(res, 400, 'Selected approver does not have approve_rfq permission');
     }
     
     // Validate that quotation creator has quotation_create permission
     const quotationCreator = await User.findById(quotationCreatorId).populate('permissions');
-    if (!quotationCreator || !quotationCreator.permissions.some(p => p.name === 'quotation_create')) {
+    if (!quotationCreator || !hasPermission(quotationCreator, 'quotation_create')) {
       return sendErrorResponse(res, 400, 'Selected quotation creator does not have quotation_create permission');
     }
     
@@ -284,6 +243,17 @@ router.post('/', authenticateToken, authorize(['quotation_requester']), async (r
       description: `New RFQ request for ${customerName} from ${req.user.fullName || req.user.email}`,
       path: '/quotations'
     });
+    
+    // Send email notification to approver
+    const approverUser = await User.findById(approverId).select('email fullName');
+    if (approverUser && approverUser.email) {
+      sendRFQNotificationEmail(
+        approverUser.email,
+        rfq.rfqNumber,
+        `New RFQ request for ${customerName} requires your approval. Please review and approve/reject the request.`,
+        approverUser.fullName || approverUser.email
+      );
+    }
     
     return sendSuccessResponse(res, 201, 'RFQ created successfully', { rfq });
   } catch (e) {
@@ -335,6 +305,30 @@ router.patch('/:id/approve', authenticateToken, authorize(['approve_rfq']), asyn
       path: '/quotations'
     });
     
+    // Send email notifications
+    const requester = await User.findById(rfq.requesterId._id).select('email fullName');
+    const quotationCreator = await User.findById(rfq.quotationCreatorId._id).select('email fullName');
+    
+    // Email to requester
+    if (requester && requester.email) {
+      sendRFQNotificationEmail(
+        requester.email,
+        rfq.rfqNumber,
+        `Your RFQ request has been approved with bid decision. The quotation creation process can now begin.`,
+        requester.fullName || requester.email
+      );
+    }
+    
+    // Email to quotation creator
+    if (quotationCreator && quotationCreator.email) {
+      sendRFQNotificationEmail(
+        quotationCreator.email,
+        rfq.rfqNumber,
+        `RFQ has been approved. You can now create the quotation for this request.`,
+        quotationCreator.fullName || quotationCreator.email
+      );
+    }
+    
     return sendSuccessResponse(res, 200, 'RFQ approved successfully', { rfq });
   } catch (e) {
     return sendErrorResponse(res, 500, 'Failed to approve RFQ', e.message);
@@ -377,6 +371,17 @@ router.patch('/:id/reject', authenticateToken, authorize(['approve_rfq']), async
       path: '/quotations'
     });
     
+    // Send email notification to requester
+    const requester = await User.findById(rfq.requesterId._id).select('email fullName');
+    if (requester && requester.email) {
+      sendRFQNotificationEmail(
+        requester.email,
+        rfq.rfqNumber,
+        `Your RFQ request has been rejected with no bid decision. Please review the feedback and consider alternative approaches.`,
+        requester.fullName || requester.email
+      );
+    }
+    
     return sendSuccessResponse(res, 200, 'RFQ rejected successfully', { rfq });
   } catch (e) {
     return sendErrorResponse(res, 500, 'Failed to reject RFQ', e.message);
@@ -406,7 +411,7 @@ router.get('/approved-for-quotation', authenticateToken, async (req, res) => {
     
     // Check if user has quotation_create permission
     const user = await User.findById(userId).populate('permissions');
-    const canCreateQuotation = user.permissions.some(p => p.name === 'quotation_create');
+    const canCreateQuotation = hasPermission(user, 'quotation_create');
     
     if (!canCreateQuotation) {
       return sendErrorResponse(res, 403, 'Access denied. Quotation create permission required.');
@@ -444,9 +449,9 @@ router.get('/:id/items', authenticateToken, async (req, res) => {
     
     // Check permissions
     const user = await User.findById(userId).populate('permissions');
-    const canApprove = user.permissions.some(p => p.name === 'approve_rfq');
-    const canCreateQuotation = user.permissions.some(p => p.name === 'quotation_create');
-    const canRequestQuotation = user.permissions.some(p => p.name === 'quotation_requester');
+    const canApprove = hasPermission(user, 'approve_rfq');
+    const canCreateQuotation = hasPermission(user, 'quotation_create');
+    const canRequestQuotation = hasPermission(user, 'quotation_requester');
     
     const hasAccess = (
       rfq.requesterId.toString() === userId.toString() ||
@@ -560,9 +565,9 @@ router.get('/:id', authenticateToken, async (req, res) => {
     
     // Check if user has access to this RFQ
     const user = await User.findById(userId).populate('permissions');
-    const canApprove = user.permissions.some(p => p.name === 'approve_rfq');
-    const canCreateQuotation = user.permissions.some(p => p.name === 'quotation_create');
-    const canRequestQuotation = user.permissions.some(p => p.name === 'quotation_requester');
+    const canApprove = hasPermission(user, 'approve_rfq');
+    const canCreateQuotation = hasPermission(user, 'quotation_create');
+    const canRequestQuotation = hasPermission(user, 'quotation_requester');
     
     const rfq = await getRFQById(id);
     

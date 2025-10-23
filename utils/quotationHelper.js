@@ -341,7 +341,10 @@ const getQuotationOfferById = async (offerId) => {
 
 // Get all offers for a quotation with revision hierarchy
 const getQuotationOffers = async (quotationNumber) => {
-  const header = await QuotationHeader.findOne({ quotationNumber }).populate('userId', 'fullName email');
+  const header = await QuotationHeader.findOne({ quotationNumber })
+    .populate('requesterId', 'fullName email')
+    .populate('approverId', 'fullName email')
+    .populate('creatorId', 'fullName email');
   if (!header) {
     throw new Error('Quotation header not found');
   }
@@ -556,8 +559,26 @@ const getQuotations = async (filters = {}, pagination = { page: 1, limit: 10 }) 
 
   // Build query for headers
   const headerQuery = {};
-  if (filters.userId) {
-    headerQuery.userId = filters.userId;
+  
+  // Handle specific user field filters first
+  if (filters.requesterId) {
+    headerQuery.requesterId = filters.requesterId;
+  }
+  if (filters.approverId) {
+    headerQuery.approverId = filters.approverId;
+  }
+  if (filters.creatorId) {
+    headerQuery.creatorId = filters.creatorId;
+  }
+  
+  // Handle generic userId filter (for backward compatibility)
+  if (filters.userId && !filters.requesterId && !filters.approverId && !filters.creatorId) {
+    // Support both old userId filter and new user field filters
+    headerQuery.$or = [
+      { requesterId: filters.userId },
+      { approverId: filters.userId },
+      { creatorId: filters.userId }
+    ];
   }
   if (filters.customer) {
     headerQuery.customerName = new RegExp(filters.customer, 'i');
@@ -585,7 +606,9 @@ const getQuotations = async (filters = {}, pagination = { page: 1, limit: 10 }) 
 
   // Get headers with pagination and populate user data
   const headers = await QuotationHeader.find(headerQuery)
-    .populate('userId', 'fullName email')
+    .populate('requesterId', 'fullName email')
+    .populate('approverId', 'fullName email')
+    .populate('creatorId', 'fullName email')
     .sort({ createdAt: -1 })
     .skip(skip)
     .limit(limit);
