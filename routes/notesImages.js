@@ -28,7 +28,7 @@ const upload = multer({
 });
 
 // Upload notes image (standalone)
-router.post('/upload', authenticateToken, upload.single('image'), async (req, res) => {
+router.post('/upload', authenticateToken, authorize(['placeholder_test']), upload.single('image'), async (req, res) => {
   try {
     const userId = req.user.id;
 
@@ -165,7 +165,7 @@ const cleanupOrphanedImages = async (offerIds) => {
 };
 
 // Check if an image is used in other offers
-router.get('/:imageId/usage', authenticateToken, async (req, res) => {
+router.get('/:imageId/usage', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
   try {
     const { imageId } = req.params;
     
@@ -194,7 +194,7 @@ router.get('/:imageId/usage', authenticateToken, async (req, res) => {
 });
 
 // Get all notes images for an offer
-router.get('/offer/:offerId', authenticateToken, async (req, res) => {
+router.get('/offer/:offerId', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
   try {
     const { offerId } = req.params;
 
@@ -232,7 +232,7 @@ router.get('/offer/:offerId', authenticateToken, async (req, res) => {
 });
 
 // Add notes image to offer
-router.post('/offer/:offerId/add/:imageId', authenticateToken, async (req, res) => {
+router.post('/offer/:offerId/add/:imageId', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
   try {
     const { offerId, imageId } = req.params;
 
@@ -277,7 +277,7 @@ router.post('/offer/:offerId/add/:imageId', authenticateToken, async (req, res) 
 });
 
 // Remove notes image from offer (smart deletion)
-router.delete('/offer/:offerId/remove/:imageId', authenticateToken, async (req, res) => {
+router.delete('/offer/:offerId/remove/:imageId', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
   try {
     const { offerId, imageId } = req.params;
 
@@ -336,7 +336,7 @@ router.delete('/offer/:offerId/remove/:imageId', authenticateToken, async (req, 
 });
 
 // Replace notes image file
-router.put('/:imageId/files/:fileId/replace', authenticateToken, upload.single('file'), async (req, res) => {
+router.put('/:imageId/files/:fileId/replace', authenticateToken, authorize(['placeholder_test']), upload.single('file'), async (req, res) => {
   try {
     const { imageId, fileId } = req.params;
     const file = req.file;
@@ -431,7 +431,7 @@ router.put('/:imageId/files/:fileId/replace', authenticateToken, upload.single('
 });
 
 // Delete notes image (standalone)
-router.delete('/:imageId', authenticateToken, async (req, res) => {
+router.delete('/:imageId', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
   try {
     const { imageId } = req.params;
     const userId = req.user.id;

@@ -1,3 +1,9 @@
+// =============================================================================
+// AUTHENTICATION & USER MANAGEMENT ROUTES
+// =============================================================================
+// This module handles all authentication, user management, and permission-related endpoints
+// for the ASB system including login, registration, user CRUD, and permission management.
+
 const express = require('express');
 const User = require('../models/user.model');
 const Permission = require('../models/permission.model');
@@ -162,6 +168,15 @@ const seedDatabase = async (adminUserId) => {
  * Check if user registration is available
  * No authentication required (public endpoint)
  */
+// =============================================================================
+// PUBLIC AUTHENTICATION ROUTES
+// =============================================================================
+
+/**
+ * GET /api/auth/registration-status
+ * Permission: None (Public)
+ * Description: Check if any users exist in the system (for first-time setup)
+ */
 router.get('/registration-status', async (req, res) => {
   try {
     const existingUsers = await User.countDocuments();
@@ -186,6 +201,11 @@ router.get('/registration-status', async (req, res) => {
  * Register new user - ONLY ALLOWED ONCE
  * If no users exist, this user becomes super admin and seeds the database
  * After first user, registration is disabled
+ */
+/**
+ * POST /api/auth/register
+ * Permission: None (Public - only if no users exist)
+ * Description: Register the first admin user in the system
  */
 router.post('/register', async (req, res) => {
   try {
@@ -260,6 +280,11 @@ router.post('/register', async (req, res) => {
  * User login and authentication
  * No permission required (public endpoint)
  */
+/**
+ * POST /api/auth/login
+ * Permission: None (Public)
+ * Description: Authenticate user and return JWT token
+ */
 router.post('/login', async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -308,6 +333,15 @@ router.post('/login', async (req, res) => {
  * Get current user profile information
  * Required Permission: user_view (self)
  */
+// =============================================================================
+// AUTHENTICATED USER PROFILE ROUTES
+// =============================================================================
+
+/**
+ * GET /api/auth/profile
+ * Permission: Any authenticated user
+ * Description: Get current user's profile information
+ */
 router.get('/profile', authenticateToken, authorizeAll(), async (req, res) => {
   try {
     const user = await User.findById(req.user.userId).select('-password');
@@ -334,6 +368,11 @@ router.get('/profile', authenticateToken, authorizeAll(), async (req, res) => {
  * Update current user profile
  * Required Permission: user_update (self)
  */
+/**
+ * PUT /api/auth/profile
+ * Permission: Any authenticated user
+ * Description: Update current user's profile information
+ */
 router.put('/profile', authenticateToken, authorizeAll(), async (req, res) => {
   try {
     const { fullName, phoneNumbers } = req.body;
@@ -359,6 +398,11 @@ router.put('/profile', authenticateToken, authorizeAll(), async (req, res) => {
  * POST /api/auth/reset-password
  * Reset user password
  * Required Permission: user_update (self)
+ */
+/**
+ * POST /api/auth/reset-password
+ * Permission: Any authenticated user
+ * Description: Reset current user's password
  */
 router.post('/reset-password', authenticateToken, authorizeAll(), async (req, res) => {
   try {
@@ -388,6 +432,15 @@ router.post('/reset-password', authenticateToken, authorizeAll(), async (req, re
  * Get all users with pagination
  * Required Permission: user_view
  */
+// =============================================================================
+// USER MANAGEMENT ROUTES (ADMIN ONLY)
+// =============================================================================
+
+/**
+ * GET /api/auth/users
+ * Permission: user_view
+ * Description: Get paginated list of all users (admin only)
+ */
 router.get('/users', authenticateToken, authorize(['user_view']), async (req, res) => {
   try {
     const { page = 1, limit = 10 } = req.query;
@@ -416,6 +469,11 @@ router.get('/users', authenticateToken, authorize(['user_view']), async (req, re
  * PUT /api/auth/users/:id
  * Update user information
  * Required Permission: user_update
+ */
+/**
+ * PUT /api/auth/users/:id
+ * Permission: user_manage
+ * Description: Update user information and permissions (admin only)
  */
 router.put('/users/:id', authenticateToken, authorize(['user_manage']), async (req, res) => {
   try {
@@ -453,6 +511,11 @@ router.put('/users/:id', authenticateToken, authorize(['user_manage']), async (r
  * Delete user account
  * Required Permission: user_delete
  */
+/**
+ * DELETE /api/auth/users/:id
+ * Permission: user_delete
+ * Description: Delete a user account (admin only)
+ */
 router.delete('/users/:id', authenticateToken, authorize(['user_delete']), async (req, res) => {
   try {
     await userHelper.deleteUser(req.params.id);
@@ -471,6 +534,11 @@ router.delete('/users/:id', authenticateToken, authorize(['user_delete']), async
  * POST /api/auth/users
  * Create new user
  * Required Permission: user_create
+ */
+/**
+ * POST /api/auth/users
+ * Permission: user_create
+ * Description: Create a new user account (admin only)
  */
 router.post('/users', authenticateToken, authorize(['user_create']), async (req, res) => {
   try {
@@ -521,6 +589,11 @@ router.post('/users', authenticateToken, authorize(['user_create']), async (req,
  * POST /api/auth/users/:id/copy
  * Copy user account with same roles
  * Required Permission: user_create
+ */
+/**
+ * POST /api/auth/users/:id/copy
+ * Permission: user_create
+ * Description: Copy an existing user with new email/name (admin only)
  */
 router.post('/users/:id/copy', authenticateToken, authorize(['user_create']), async (req, res) => {
   try {
@@ -575,6 +648,11 @@ router.post('/users/:id/copy', authenticateToken, authorize(['user_create']), as
  * Reset user password (super admin only)
  * Required Permission: user_manage
  */
+/**
+ * POST /api/auth/users/:id/reset-password
+ * Permission: user_manage
+ * Description: Reset another user's password (admin only)
+ */
 router.post('/users/:id/reset-password', authenticateToken, authorize(['user_manage']), async (req, res) => {
   try {
     const { id } = req.params;
@@ -604,6 +682,11 @@ router.post('/users/:id/reset-password', authenticateToken, authorize(['user_man
  * GET /api/auth/users/:id/permissions
  * Get user permissions
  * Required Permission: user_view
+ */
+/**
+ * GET /api/auth/users/:id/permissions
+ * Permission: user_view
+ * Description: Get user's permissions and roles (admin only)
  */
 router.get('/users/:id/permissions', authenticateToken, authorize(['user_view']), async (req, res) => {
   try {
@@ -669,6 +752,15 @@ router.post('/users/:id/reset-password', authenticateToken, authorize(['user_edi
 });
 
 // Check if current user has specific permission
+// =============================================================================
+// PERMISSION CHECK ROUTES
+// =============================================================================
+
+/**
+ * GET /api/auth/ispermission/:permission
+ * Permission: Any authenticated user
+ * Description: Check if current user has a specific permission
+ */
 router.get('/ispermission/:permission', authenticateToken, async (req, res) => {
   try {
     const { permission } = req.params;
