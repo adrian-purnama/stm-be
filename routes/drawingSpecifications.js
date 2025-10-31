@@ -10,7 +10,13 @@ const path = require('path');
 const router = express.Router();
 const { authenticateToken, authorize } = require('../middleware/auth');
 const DrawingSpecification = require('../models/drawingSpecification.model');
+const BodyType = require('../models/bodyType.model');
+const ChassisType = require('../models/chassisType.model');
+const SizeType = require('../models/sizeType.model');
+const FeatureType = require('../models/featureType.model');
 const { drawingSpecificationGridFS } = require('../utils/gridfsHelper');
+const { convertToDXF } = require('../utils/dwgConversionHelper');
+const { compressBuffer, decompressBuffer } = require('../utils/compressionHelper');
 
 // Configure multer for file uploads
 const storage = multer.memoryStorage();
@@ -20,31 +26,107 @@ const upload = multer({
     fileSize: 50 * 1024 * 1024, // 50MB limit
   },
   fileFilter: (req, file, cb) => {
-    // Allowed file types for drawings
+    // Only allow DWG and DXF files per new requirements
     const allowedTypes = [
-      'application/pdf',
-      'image/jpeg',
-      'image/png',
-      'image/jpg',
-      'image/webp',
       'application/dwg',
       'application/dxf',
+      'application/acad',
+      'application/x-dwg',
+      'application/x-dxf',
       'application/octet-stream' // For DWG/DXF files
     ];
     
-    if (allowedTypes.includes(file.mimetype) || 
-        file.originalname.toLowerCase().match(/\.(pdf|dwg|dxf|jpg|jpeg|png)$/)) {
+    const filename = file.originalname.toLowerCase();
+    const isDWG = filename.endsWith('.dwg');
+    const isDXF = filename.endsWith('.dxf');
+    
+    if (allowedTypes.includes(file.mimetype) || isDWG || isDXF) {
       cb(null, true);
     } else {
-      cb(new Error('Invalid file type. Only PDF, DWG, DXF, JPG, and PNG files are allowed.'), false);
+      cb(new Error('Invalid file type. Only DWG and DXF files are allowed.'), false);
     }
   }
 });
 
-// Get all drawing specifications
+// =============================================================================
+// VALIDATION HELPER FUNCTIONS
+// =============================================================================
+
+/**
+ * Validate master table references exist
+ */
+async function validateMasterReferences(bodyTypeId, chassisTypeId, sizeTypeId, featureIds = []) {
+  const errors = [];
+  
+  // Validate body type
+  if (bodyTypeId) {
+    const bodyType = await BodyType.findById(bodyTypeId);
+    if (!bodyType) {
+      errors.push('Invalid bodyTypeId');
+    }
+  }
+  
+  // Validate chassis type
+  if (chassisTypeId) {
+    const chassisType = await ChassisType.findById(chassisTypeId);
+    if (!chassisType) {
+      errors.push('Invalid chassisTypeId');
+    }
+  }
+  
+  // Validate size type
+  if (sizeTypeId) {
+    const sizeType = await SizeType.findById(sizeTypeId);
+    if (!sizeType) {
+      errors.push('Invalid sizeTypeId');
+    }
+  }
+  
+  // Validate feature types
+  if (featureIds && featureIds.length > 0) {
+    const validFeatureIds = featureIds.filter(id => id);
+    if (validFeatureIds.length > 0) {
+      const featureTypes = await FeatureType.find({ _id: { $in: validFeatureIds } });
+      if (featureTypes.length !== validFeatureIds.length) {
+        errors.push('One or more featureIds are invalid');
+      }
+    }
+  }
+  
+  return errors;
+}
+
 // =============================================================================
 // DRAWING SPECIFICATION CRUD ROUTES
 // =============================================================================
+
+/**
+ * GET /api/drawing-specifications/list
+ * Permission: placeholder_test (temporary - should be drawing_view)
+ * Description: Get simple list of drawing specifications for dropdowns
+ */
+router.get('/list', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
+  try {
+    const drawings = await DrawingSpecification.find({})
+      .select('drawingNumber bodyTypeId chassisTypeId chassisModel sizeTypeId')
+      .populate('bodyTypeId', 'name shortName')
+      .populate('chassisTypeId', 'name')
+      .populate('sizeTypeId', 'name shortName')
+      .sort({ drawingNumber: 1 });
+
+    res.json({
+      success: true,
+      data: drawings,
+      message: 'Drawing specifications list retrieved successfully'
+    });
+  } catch (error) {
+    console.error('Error getting drawing specifications list:', error);
+    res.status(400).json({
+      success: false,
+      message: error.message
+    });
+  }
+});
 
 /**
  * GET /api/drawing-specifications
@@ -56,25 +138,41 @@ router.get('/', authenticateToken, authorize(['placeholder_test']), async (req, 
     const { 
       page = 1, 
       limit = 10, 
-      truckType, 
+      bodyTypeId,
+      chassisTypeId,
+      sizeTypeId,
       search 
     } = req.query;
 
     // Build filter
     const filter = {};
     
-    if (truckType) {
-      filter.truckType = truckType;
+    if (bodyTypeId) {
+      filter.bodyTypeId = bodyTypeId;
+    }
+    
+    if (chassisTypeId) {
+      filter.chassisTypeId = chassisTypeId;
+    }
+    
+    if (sizeTypeId) {
+      filter.sizeTypeId = sizeTypeId;
     }
     
     if (search) {
-      filter.drawingNumber = new RegExp(search, 'i');
+      filter.$or = [
+        { drawingNumber: new RegExp(search, 'i') },
+        { chassisModel: new RegExp(search, 'i') }
+      ];
     }
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
     
     const drawings = await DrawingSpecification.find(filter)
-      .populate('truckType', 'name')
+      .populate('bodyTypeId', 'name shortName')
+      .populate('chassisTypeId', 'name shortName')
+      .populate('sizeTypeId', 'name shortName')
+      .populate('features.featureId', 'name shortName')
       .populate('createdBy', 'fullName email')
       .populate('lastModifiedBy', 'fullName email')
       .sort({ createdAt: -1 })
@@ -109,12 +207,15 @@ router.get('/', authenticateToken, authorize(['placeholder_test']), async (req, 
  * Permission: placeholder_test (temporary - should be drawing_view)
  * Description: Get specific drawing specification by ID
  */
-router.get('/:id', authenticateToken,authorize(['placeholder_test']), async (req, res) => {
+router.get('/:id', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
   try {
     const { id } = req.params;
     
     const drawing = await DrawingSpecification.findById(id)
-      .populate('truckType', 'name description')
+      .populate('bodyTypeId', 'name shortName description')
+      .populate('chassisTypeId', 'name shortName')
+      .populate('sizeTypeId', 'name shortName')
+      .populate('features.featureId', 'name shortName')
       .populate('createdBy', 'fullName email')
       .populate('lastModifiedBy', 'fullName email');
 
@@ -145,74 +246,192 @@ router.get('/:id', authenticateToken,authorize(['placeholder_test']), async (req
  * Permission: placeholder_test (temporary - should be drawing_create)
  * Description: Create new drawing specification with file upload
  */
-router.post('/', authenticateToken, authorize(['placeholder_test']), upload.single('file'), async (req, res) => {
+router.post('/', authenticateToken, authorize(['placeholder_test']), upload.single('drawingFile'), async (req, res) => {
   try {
-    const { drawingNumber, truckType } = req.body;
+    const { 
+      bodyTypeId,
+      chassisTypeId,
+      chassisModel,
+      sizeTypeId,
+      dimension,
+      features,
+      customSpecifications
+    } = req.body;
+    
     const file = req.file;
 
     // Validate required fields
-    if (!drawingNumber || !truckType) {
+    if (!bodyTypeId) {
       return res.status(400).json({
         success: false,
-        message: 'Drawing number and truck type are required'
+        message: 'Body type is required'
       });
     }
 
-    // Validate file is provided
+    // File upload is mandatory
     if (!file) {
       return res.status(400).json({
         success: false,
-        message: 'Drawing file is required'
+        message: 'Drawing file upload is required. Please upload a DWG or DXF file.'
       });
     }
 
-    const drawingData = {
-      drawingNumber,
-      truckType,
-      createdBy: req.user.userId
-    };
-
-    // Determine file type
+    // Validate file is DWG or DXF
     const fileExtension = path.extname(file.originalname).toLowerCase();
-    let fileType = 'Other';
-    
-    if (['.pdf'].includes(fileExtension)) fileType = 'PDF';
-    else if (['.dwg'].includes(fileExtension)) fileType = 'DWG';
-    else if (['.dxf'].includes(fileExtension)) fileType = 'DXF';
-    else if (['.jpg', '.jpeg'].includes(fileExtension)) fileType = 'JPG';
-    else if (['.png'].includes(fileExtension)) fileType = 'PNG';
+    if (!['.dwg', '.dxf'].includes(fileExtension)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid file type. Only DWG and DXF files are allowed.'
+      });
+    }
 
-    // Upload to GridFS
+    // Parse features
+    let parsedFeatures = [];
+    if (features) {
+      if (typeof features === 'string') {
+        parsedFeatures = JSON.parse(features);
+      } else if (Array.isArray(features)) {
+        parsedFeatures = features;
+      }
+    }
+
+    // Parse custom specifications
+    let parsedCustomSpecs = [];
+    if (customSpecifications) {
+      if (typeof customSpecifications === 'string') {
+        parsedCustomSpecs = JSON.parse(customSpecifications);
+      } else if (Array.isArray(customSpecifications)) {
+        parsedCustomSpecs = customSpecifications;
+      }
+    }
+
+    // Extract feature IDs for validation
+    const featureIds = parsedFeatures.map(f => f.featureId).filter(Boolean);
+
+    // Validate master references (only validate if provided)
+    const validationErrors = await validateMasterReferences(
+      bodyTypeId, 
+      chassisTypeId || null, 
+      sizeTypeId || null, 
+      featureIds
+    );
+
+    if (validationErrors.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed',
+        errors: validationErrors
+      });
+    }
+
+    // Process file: Convert DWG to DXF (if conversion available), then compress
+    const originalFileSize = file.size;
+    const uploadedFormat = fileExtension === '.dwg' ? 'DWG' : 'DXF';
+    
+    // Step 1: Convert DWG to DXF if needed (if conversion is configured)
+    let processedBuffer;
+    let storedFormat;
+    let converted = false;
+    
+    try {
+      console.log('[Upload] Processing file:', file.originalname, `(${file.size} bytes)`);
+      const conversionResult = await convertToDXF(file.buffer, file.originalname);
+      processedBuffer = conversionResult.buffer;
+      storedFormat = conversionResult.format;
+      converted = conversionResult.converted || false;
+      
+      console.log('[Upload] Result:', {
+        format: storedFormat,
+        converted: converted ? 'YES' : 'NO',
+        size: processedBuffer.length
+      });
+    } catch (conversionError) {
+      console.error('[Upload] Processing failed:', conversionError.message);
+      return res.status(400).json({
+        success: false,
+        message: `File processing failed: ${conversionError.message}`
+      });
+    }
+    
+    // Step 2: Compress file (DXF or DWG)
+    let compressedBuffer;
+    let compressedFileSize;
+    try {
+      const compressionResult = await compressBuffer(processedBuffer);
+      compressedBuffer = compressionResult.compressed;
+      compressedFileSize = compressionResult.compressedSize;
+    } catch (compressionError) {
+      return res.status(500).json({
+        success: false,
+        message: `File compression failed: ${compressionError.message}`
+      });
+    }
+    
+    // Step 3: Upload compressed file to GridFS
+    const outputFileExtension = storedFormat === 'DXF' ? '.dxf' : '.dwg';
     const uploadResult = await drawingSpecificationGridFS.uploadBuffer(
-      file.buffer,
-      `${drawingNumber}_${Date.now()}_${file.originalname}`,
+      compressedBuffer,
+      `drawing_${Date.now()}${outputFileExtension}`,
       {
         originalName: file.originalname,
-        uploadedBy: req.user.userId
+        uploadedBy: req.user.userId,
+        isCompressed: true,
+        originalFormat: uploadedFormat,
+        storedFormat: storedFormat
       }
     );
 
-    // Add file data to drawing
-    drawingData.drawingFile = {
-      fileId: uploadResult.fileId,
-      filename: uploadResult.filename,
-      originalName: file.originalname,
-      fileType: fileType,
-      fileSize: file.size,
-      uploadDate: new Date()
+    // Build drawing data (drawingNumber will be auto-generated)
+    const drawingData = {
+      bodyTypeId,
+      chassisTypeId: chassisTypeId || undefined,
+      chassisModel: chassisModel ? chassisModel.trim() : '',
+      sizeTypeId: sizeTypeId || undefined,
+      dimension: dimension ? dimension.trim() : '',
+      features: parsedFeatures.map(f => ({
+        featureId: f.featureId,
+        spec: f.spec || ''
+      })),
+      customSpecifications: parsedCustomSpecs
+        .filter(cs => cs && cs.category && cs.items && Array.isArray(cs.items))
+        .map(cs => ({
+          category: cs.category.trim(),
+          items: cs.items
+            .filter(item => item && item.name && item.specification && item.name.trim() && item.specification.trim())
+            .map(item => ({
+              name: item.name.trim(),
+              specification: item.specification.trim()
+            }))
+        }))
+        .filter(cs => cs.items && cs.items.length > 0),
+      drawingFile: {
+        fileId: uploadResult.fileId,
+        filename: uploadResult.filename,
+        originalName: file.originalname,
+        uploadedFormat: uploadedFormat,
+        storedFormat: storedFormat, // 'DXF' if converted, 'DWG' if not
+        originalFileSize: originalFileSize,
+        compressedFileSize: compressedFileSize,
+        isCompressed: true,
+        uploadDate: new Date()
+      },
+      createdBy: req.user.userId
     };
 
     const drawing = new DrawingSpecification(drawingData);
     await drawing.save();
 
     const populatedDrawing = await DrawingSpecification.findById(drawing._id)
-      .populate('truckType', 'name')
+      .populate('bodyTypeId', 'name shortName')
+      .populate('chassisTypeId', 'name shortName')
+      .populate('sizeTypeId', 'name shortName')
+      .populate('features.featureId', 'name shortName')
       .populate('createdBy', 'fullName email');
 
     res.status(201).json({
       success: true,
       data: populatedDrawing,
-      message: 'Drawing specification created successfully with file'
+      message: 'Drawing specification created successfully'
     });
   } catch (error) {
     console.error('Error creating drawing specification:', error);
@@ -231,7 +450,7 @@ router.post('/', authenticateToken, authorize(['placeholder_test']), upload.sing
     if (error.code === 11000) {
       return res.status(400).json({
         success: false,
-        message: 'Drawing number already exists'
+        message: 'Drawing specification with this combination already exists'
       });
     }
     
@@ -246,25 +465,111 @@ router.post('/', authenticateToken, authorize(['placeholder_test']), upload.sing
 router.put('/:id', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
   try {
     const { id } = req.params;
+    const { 
+      bodyTypeId,
+      chassisTypeId,
+      chassisModel,
+      sizeTypeId,
+      dimension,
+      features,
+      customSpecifications
+    } = req.body;
+
+    // Check if drawing exists
+    const existingDrawing = await DrawingSpecification.findById(id);
+    if (!existingDrawing) {
+      return res.status(404).json({
+        success: false,
+        message: 'Drawing specification not found'
+      });
+    }
+
+    // Build update data
     const updateData = {
-      ...req.body,
       lastModifiedBy: req.user.userId
     };
 
-    const drawing = await DrawingSpecification.findByIdAndUpdate(
-      id,
-      updateData,
-      { new: true, runValidators: true }
-    ).populate('truckType', 'name')
-     .populate('createdBy', 'fullName email')
-     .populate('lastModifiedBy', 'fullName email');
+    // Update fields if provided
+    if (bodyTypeId !== undefined) updateData.bodyTypeId = bodyTypeId;
+    if (chassisTypeId !== undefined) updateData.chassisTypeId = chassisTypeId;
+    if (chassisModel !== undefined) updateData.chassisModel = chassisModel.trim();
+    if (sizeTypeId !== undefined) updateData.sizeTypeId = sizeTypeId;
+    if (dimension !== undefined) updateData.dimension = dimension.trim();
 
+    // Handle features
+    if (features !== undefined) {
+      let parsedFeatures = [];
+      if (typeof features === 'string') {
+        parsedFeatures = JSON.parse(features);
+      } else if (Array.isArray(features)) {
+        parsedFeatures = features;
+      }
+      updateData.features = parsedFeatures.map(f => ({
+        featureId: f.featureId,
+        spec: f.spec || ''
+      }));
+    }
+
+    // Handle custom specifications
+    if (customSpecifications !== undefined) {
+      let parsedCustomSpecs = [];
+      if (typeof customSpecifications === 'string') {
+        parsedCustomSpecs = JSON.parse(customSpecifications);
+      } else if (Array.isArray(customSpecifications)) {
+        parsedCustomSpecs = customSpecifications;
+      }
+      updateData.customSpecifications = parsedCustomSpecs
+        .filter(cs => cs && cs.specification && cs.specification.trim())
+        .map(cs => ({
+          specification: cs.specification.trim()
+        }));
+    }
+
+    // Validate master references for updated fields
+    const featureIds = updateData.features ? 
+      updateData.features.map(f => f.featureId).filter(Boolean) : 
+      [];
+    
+    const validationErrors = await validateMasterReferences(
+      updateData.bodyTypeId || existingDrawing.bodyTypeId,
+      updateData.chassisTypeId || existingDrawing.chassisTypeId,
+      updateData.sizeTypeId || existingDrawing.sizeTypeId,
+      featureIds.length > 0 ? featureIds : 
+        (existingDrawing.features || []).map(f => f.featureId).filter(Boolean)
+    );
+
+    if (validationErrors.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed',
+        errors: validationErrors
+      });
+    }
+
+    // Get existing drawing and update manually to ensure composite key regeneration
+    const drawing = await DrawingSpecification.findById(id);
     if (!drawing) {
       return res.status(404).json({
         success: false,
         message: 'Drawing specification not found'
       });
     }
+
+    // Apply updates
+    Object.assign(drawing, updateData);
+    
+    // Save to trigger pre-save middleware for composite key regeneration
+    await drawing.save();
+
+    // Populate and return
+    await drawing.populate([
+      { path: 'bodyTypeId', select: 'name shortName' },
+      { path: 'chassisTypeId', select: 'name shortName' },
+      { path: 'sizeTypeId', select: 'name shortName' },
+      { path: 'features.featureId', select: 'name shortName' },
+      { path: 'createdBy', select: 'fullName email' },
+      { path: 'lastModifiedBy', select: 'fullName email' }
+    ]);
 
     res.json({
       success: true,
@@ -273,6 +578,15 @@ router.put('/:id', authenticateToken, authorize(['placeholder_test']), async (re
     });
   } catch (error) {
     console.error('Error updating drawing specification:', error);
+    
+    // Handle duplicate key error
+    if (error.code === 11000) {
+      return res.status(400).json({
+        success: false,
+        message: 'Drawing specification with this combination already exists'
+      });
+    }
+    
     res.status(400).json({
       success: false,
       message: error.message
@@ -526,6 +840,86 @@ router.delete('/:id', authenticateToken, authorize(['placeholder_test']), async 
       success: false,
       message: error.message
     });
+  }
+});
+
+/**
+ * GET /api/drawing-specifications/:id/download
+ * Download drawing file (decompressed)
+ * Required Permission: placeholder_test
+ */
+router.get('/:id/download', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const drawing = await DrawingSpecification.findById(id);
+    if (!drawing) {
+      return res.status(404).json({
+        success: false,
+        message: 'Drawing specification not found'
+      });
+    }
+    
+    if (!drawing.drawingFile || !drawing.drawingFile.fileId) {
+      return res.status(404).json({
+        success: false,
+        message: 'No drawing file found for this specification'
+      });
+    }
+    
+    // Get compressed file buffer
+    const compressedBuffer = await drawingSpecificationGridFS.getFileBuffer(drawing.drawingFile.fileId);
+    
+    // Decompress the file if it's compressed
+    let fileBuffer;
+    if (drawing.drawingFile.isCompressed) {
+      fileBuffer = await decompressBuffer(compressedBuffer);
+    } else {
+      fileBuffer = compressedBuffer;
+    }
+    
+    // Determine filename based on stored format
+    const originalName = drawing.drawingFile.originalName;
+    const baseName = path.parse(originalName).name;
+    const storedFormat = drawing.drawingFile.storedFormat || 'DXF';
+    const uploadedFormat = drawing.drawingFile.uploadedFormat || 'DWG';
+    
+    console.log('[Download] File info:', {
+      originalName: originalName,
+      uploadedFormat: uploadedFormat,
+      storedFormat: storedFormat,
+      isCompressed: drawing.drawingFile.isCompressed,
+      fileBufferSize: fileBuffer.length
+    });
+    
+    // If file was stored as DWG (conversion didn't happen), we need to check if it's actually DWG
+    // The storedFormat should reflect what's actually in the file
+    const downloadFilename = `${baseName}.${storedFormat.toLowerCase()}`;
+    
+    // Set appropriate content type
+    const contentType = storedFormat === 'DXF' ? 'application/dxf' : 'application/dwg';
+    
+    console.log('[Download] Sending file:', {
+      filename: downloadFilename,
+      contentType: contentType,
+      format: storedFormat
+    });
+    
+    // Set headers
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Content-Disposition', `attachment; filename="${downloadFilename}"`);
+    res.setHeader('Content-Length', fileBuffer.length);
+    
+    // Send the decompressed file
+    res.send(fileBuffer);
+  } catch (error) {
+    console.error('Error downloading drawing file:', error);
+    if (!res.headersSent) {
+      res.status(500).json({
+        success: false,
+        message: error.message || 'Error downloading file'
+      });
+    }
   }
 });
 

@@ -41,6 +41,28 @@ const userSchema = new mongoose.Schema({
     ref: 'Permission'
   }],
   
+  // RFQ folders for personal organization
+  rfqFolders: [{
+    _id: {
+      type: mongoose.Schema.Types.ObjectId,
+      auto: true
+    },
+    name: {
+      type: String,
+      required: true,
+      trim: true
+    },
+    color: {
+      type: String,
+      required: true,
+      default: '#3B82F6' // Default blue
+    },
+    createdAt: {
+      type: Date,
+      default: Date.now
+    }
+  }],
+  
   isActive: {
     type: Boolean,
     default: true

@@ -155,7 +155,43 @@ MONGODB_URI=mongodb://localhost:27017/asb
 JWT_SECRET=your_jwt_secret
 FRONTEND_URL=http://localhost:5173
 NODE_ENV=development
+
+# DWG to DXF Conversion (Optional)
+# Leave these commented to allow DWG files without conversion
+# ODA_FILE_CONVERTER_PATH=C:\ODAFileConverter\ODAFileConverter.exe
+# REQUIRE_DWG_CONVERSION=false
 ```
+
+### Drawing File Upload (DWG/DXF)
+
+The system supports both DWG and DXF file formats for drawing uploads.
+
+**Default Behavior (Recommended - Works Out of the Box):**
+- Both DWG and DXF files are stored **as uploaded** (no conversion)
+- Zero configuration required
+- Perfect for storing and retrieving CAD files
+- **This is what you're currently using** ✅
+
+**⚠️ Important:** There is NO pure Node.js library that can convert DWG to DXF. All conversion requires external tools.
+
+**Optional: Enable DWG to DXF Conversion**
+**Only needed if you require automatic conversion to DXF format.**
+
+1. Download ODA File Converter (FREE, Open Source):
+   - Website: https://www.opendesign.com/guestfiles/oda_file_converter
+   - No payment required, works offline
+   - One-time installation (~50MB download)
+
+2. Extract the ZIP file to any folder (e.g., `C:\ODAFileConverter`)
+
+3. Add to your `.env` file:
+   ```env
+   ODA_FILE_CONVERTER_PATH=C:\ODAFileConverter\ODAFileConverter.exe
+   ```
+
+4. Restart your server
+
+**For more details, see:** `backend/utils/DWG_CONVERSION_NOTES.md`
 
 ## Installation
 

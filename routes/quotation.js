@@ -38,7 +38,8 @@ const {
 // Get all quotations for the authenticated user
 router.get('/', authenticateToken, authorize(['quotation_view']), async (req, res) => {
   try {
-    const { page = 1, limit = 10, filterMode = 'all', ...filters } = req.query;
+    const { page = 1, limit = 10, filterMode = 'all', lightweight = 'false', ...filters } = req.query;
+    const isLightweight = lightweight === 'true' || lightweight === '1';
     
     // Get user with permissions
     const user = await require('../models/user.model').findById(req.user.userId).populate('permissions');
@@ -101,7 +102,7 @@ router.get('/', authenticateToken, authorize(['quotation_view']), async (req, re
       // No additional filtering needed for admin users
     }
     
-    const result = await getQuotations(userFilters, { page: parseInt(page), limit: parseInt(limit) });
+    const result = await getQuotations(userFilters, { page: parseInt(page), limit: parseInt(limit) }, { lightweight: isLightweight });
     
     // Additional security check: Filter out quotations the user shouldn't see
     const { RFQ } = require('../models/rfq.model');
@@ -122,12 +123,24 @@ router.get('/', authenticateToken, authorize(['quotation_view']), async (req, re
       } else {
       
         // Check if user is the creator, requester, or approver
+        // Handle both lightweight mode (just ID) and full mode (populated object)
         const header = quotation.header;
-        if (header.creatorId && (header.creatorId._id ? header.creatorId._id.toString() : header.creatorId.toString()) === req.user.userId.toString()) {
-          canAccess = true;
-        } else if (header.requesterId && (header.requesterId._id ? header.requesterId._id.toString() : header.requesterId.toString()) === req.user.userId.toString()) {
-          canAccess = true;
-        } else if (header.approverId && (header.approverId._id ? header.approverId._id.toString() : header.approverId.toString()) === req.user.userId.toString()) {
+        
+        // Extract user IDs - handle both ObjectId and populated object
+        const getUserId = (userField) => {
+          if (!userField) return null;
+          if (typeof userField === 'object' && userField._id) {
+            return userField._id.toString();
+          }
+          return userField.toString();
+        };
+        
+        const creatorId = getUserId(header.creatorId);
+        const requesterId = getUserId(header.requesterId);
+        const approverId = getUserId(header.approverId);
+        const userId = req.user.userId.toString();
+        
+        if (creatorId === userId || requesterId === userId || approverId === userId) {
           canAccess = true;
         }
         
@@ -162,6 +175,18 @@ router.get('/', authenticateToken, authorize(['quotation_view']), async (req, re
     // Update result with filtered quotations
     result.quotations = filteredQuotations;
     
+    // If lightweight mode, return only minimal safe headers (fast initial load)
+    // Use data directly from getQuotations helper which already handles lightweight mode
+    if (isLightweight) {
+      return res.json({
+        success: true,
+        data: result.quotations, // Already in minimal format from helper
+        pagination: result.pagination,
+        message: 'Quotation headers retrieved successfully'
+      });
+    }
+    
+    // Full mode - include all offers and details
     // Simplify the response - only include essential data
     const simplifiedQuotations = result.quotations.map(quotation => ({
       header: {
@@ -260,7 +285,7 @@ router.get('/all', authenticateToken, authorize(['all_quotation_viewer']), async
     const userFilters = { ...filters, filterMode: 'all_viewer' };
     
     // No additional filtering needed - show all quotations
-    const result = await getQuotations(userFilters, { page: parseInt(page), limit: parseInt(limit) });
+    const result = await getQuotations(userFilters, { page: parseInt(page), limit: parseInt(limit) }, { lightweight: false });
     
     // Simplify the response - only include essential data
     const simplifiedQuotations = result.quotations.map(quotation => ({
@@ -683,6 +708,44 @@ router.get('/by-id/:quotationId', authenticateToken, authorize(['quotation_view'
   } catch (error) {
     console.error('Error fetching quotation by ID:', error);
     res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Get full header details for a quotation (with populated fields) - for async loading
+router.get('/:quotationNumber/header', authenticateToken, authorize(['quotation_view']), async (req, res) => {
+  try {
+    const { quotationNumber } = req.params;
+    const { getFollowUpStatus } = require('../utils/quotationHelper');
+    const QuotationHeader = require('../models/quotationHeader.model');
+    
+    const header = await QuotationHeader.findOne({ quotationNumber })
+      .populate('requesterId', 'fullName email')
+      .populate('approverId', 'fullName email')
+      .populate('creatorId', 'fullName email');
+    
+    if (!header) {
+      return res.status(404).json({
+        success: false,
+        message: 'Quotation not found'
+      });
+    }
+
+    const followUpStatus = getFollowUpStatus(header.lastFollowUpDate);
+
+    res.json({
+      success: true,
+      data: {
+        ...header.toObject(),
+        followUpStatus
+      },
+      message: 'Header details retrieved successfully'
+    });
+  } catch (error) {
+    console.error('Error fetching header details:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
   }
 });
 

@@ -79,12 +79,16 @@ const getRFQById = async (rfqId) => {
       .populate('approverId', 'email fullName')
       .populate('quotationCreatorId', 'email fullName')
       .populate('quotationId')
+      .populate('bodyTypeId', 'name shortName')
+      .populate('chassisTypeId', 'name shortName')
+      .populate('engineeringTransit.assignedTo', 'email fullName')
+      .populate('engineeringTransit.reviewedBy', 'email fullName')
       .populate({
         path: 'items',
-        populate: {
-          path: 'drawingSpecification',
-          model: 'DrawingSpecification'
-        }
+        populate: [
+          { path: 'drawingSpecification', model: 'DrawingSpecification' },
+          { path: 'templateSourceId' }
+        ]
       });
     
     if (!rfq) {
@@ -108,12 +112,16 @@ const getRFQs = async (filters = {}, options = {}) => {
       .populate('approverId', 'email fullName')
       .populate('quotationCreatorId', 'email fullName')
       .populate('quotationId')
+      .populate('bodyTypeId', 'name shortName')
+      .populate('chassisTypeId', 'name shortName')
+      .populate('engineeringTransit.assignedTo', 'email fullName')
+      .populate('engineeringTransit.reviewedBy', 'email fullName')
       .populate({
         path: 'items',
-        populate: {
-          path: 'drawingSpecification',
-          model: 'DrawingSpecification'
-        }
+        populate: [
+          { path: 'drawingSpecification', model: 'DrawingSpecification' },
+          { path: 'templateSourceId' }
+        ]
       })
       .sort({ createdAt: -1 })
       .skip(skip)

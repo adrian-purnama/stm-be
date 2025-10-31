@@ -1,17 +1,28 @@
 const express = require('express');
 const router = express.Router();
 const { authenticateToken, authorize } = require('../middleware/auth');
-const TruckType = require('../models/truckType.model');
+const BodyType = require('../models/bodyType.model');
 const DrawingSpecification = require('../models/drawingSpecification.model');
 const { sendErrorResponse, sendSuccessResponse, handleValidationError, ERROR_MESSAGES, SUCCESS_MESSAGES } = require('../utils/errorHandler');
 
+// Helper function to convert string to title case
+const toTitleCase = (str) => {
+  if (!str) return str;
+  return str
+    .trim()
+    .toLowerCase()
+    .split(' ')
+    .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
+};
+
 // ============================================================================
-// TRUCK TYPE MANAGEMENT ROUTES
+// BODY TYPE MANAGEMENT ROUTES
 // ============================================================================
 
 /**
- * GET /api/truck-types
- * Get all truck types with pagination and filtering
+ * GET /api/body-types
+ * Get all body types with pagination and filtering
  * Required Permission: truck_view
  */
 router.get('/', authenticateToken, authorize(['truck_view']), async (req, res) => {
@@ -19,16 +30,11 @@ router.get('/', authenticateToken, authorize(['truck_view']), async (req, res) =
     const { 
       page = 1, 
       limit = 10, 
-      category, 
       search
     } = req.query;
 
     // Build filter
     const filter = {};
-    
-    if (category) {
-      filter.category = new RegExp(category, 'i');
-    }
     
     if (search) {
       filter.name = new RegExp(search, 'i');
@@ -36,25 +42,25 @@ router.get('/', authenticateToken, authorize(['truck_view']), async (req, res) =
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
     
-    const truckTypes = await TruckType.find(filter)
+    const bodyTypes = await BodyType.find(filter)
       .populate('createdBy', 'fullName email')
       .populate('lastModifiedBy', 'fullName email')
       .sort({ name: 1 })
       .skip(skip)
       .limit(parseInt(limit));
 
-    const total = await TruckType.countDocuments(filter);
+    const total = await BodyType.countDocuments(filter);
 
     res.json({
       success: true,
-      data: truckTypes,
+      data: bodyTypes,
       pagination: {
         page: parseInt(page),
         limit: parseInt(limit),
         total,
         pages: Math.ceil(total / parseInt(limit))
       },
-      message: 'Truck types retrieved successfully'
+      message: 'Body types retrieved successfully'
     });
   } catch (error) {
     sendErrorResponse(res, 400, ERROR_MESSAGES.INTERNAL_ERROR, error.message);
@@ -62,20 +68,20 @@ router.get('/', authenticateToken, authorize(['truck_view']), async (req, res) =
 });
 
 /**
- * GET /api/truck-types/list
- * Get simple truck types list for dropdowns
+ * GET /api/body-types/list
+ * Get simple body types list for dropdowns
  * Required Permission: truck_view
  */
 router.get('/list', authenticateToken, authorize(['truck_view']), async (req, res) => {
   try {
-    const truckTypes = await TruckType.find({})
-      .select('name category')
+    const bodyTypes = await BodyType.find({})
+      .select('name shortName defaultSpecifications')
       .sort({ name: 1 });
 
     res.json({
       success: true,
-      data: truckTypes,
-      message: 'Truck types list retrieved successfully'
+      data: bodyTypes,
+      message: 'Body types list retrieved successfully'
     });
   } catch (error) {
     sendErrorResponse(res, 400, ERROR_MESSAGES.INTERNAL_ERROR, error.message);
@@ -83,29 +89,29 @@ router.get('/list', authenticateToken, authorize(['truck_view']), async (req, re
 });
 
 /**
- * GET /api/truck-types/:id
- * Get specific truck type by ID
+ * GET /api/body-types/:id
+ * Get specific body type by ID
  * Required Permission: truck_view
  */
 router.get('/:id', authenticateToken, authorize(['truck_view']), async (req, res) => {
   try {
     const { id } = req.params;
     
-    const truckType = await TruckType.findById(id)
+    const bodyType = await BodyType.findById(id)
       .populate('createdBy', 'fullName email')
       .populate('lastModifiedBy', 'fullName email');
 
-    if (!truckType) {
+    if (!bodyType) {
       return res.status(404).json({
         success: false,
-        message: 'Truck type not found'
+        message: 'Body type not found'
       });
     }
 
     res.json({
       success: true,
-      data: truckType,
-      message: 'Truck type retrieved successfully'
+      data: bodyType,
+      message: 'Body type retrieved successfully'
     });
   } catch (error) {
     sendErrorResponse(res, 400, ERROR_MESSAGES.INTERNAL_ERROR, error.message);
@@ -113,19 +119,33 @@ router.get('/:id', authenticateToken, authorize(['truck_view']), async (req, res
 });
 
 /**
- * POST /api/truck-types
- * Create new truck type
+ * POST /api/body-types
+ * Create new body type
  * Required Permission: truck_create
  */
 router.post('/', authenticateToken, authorize(['truck_create']), async (req, res) => {
   try {
-    const { name, description, category, defaultSpecifications } = req.body;
+    const { name, shortName, description, defaultSpecifications } = req.body;
     
     // Validate required fields
     if (!name || !name.trim()) {
       return res.status(400).json({
         success: false,
-        message: 'Truck type name is required'
+        message: 'Body type name is required'
+      });
+    }
+    
+    if (!shortName || !shortName.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Body type short name is required'
+      });
+    }
+    
+    if (shortName.trim().length > 20) {
+      return res.status(400).json({
+        success: false,
+        message: 'Short name must be 20 characters or less'
       });
     }
 
@@ -157,28 +177,26 @@ router.post('/', authenticateToken, authorize(['truck_create']), async (req, res
       }
     }
     
-    const truckTypeData = {
-      name: name.trim(),
+    const bodyTypeData = {
+      name: toTitleCase(name),
+      shortName: shortName.trim().toUpperCase(),
       description: description ? description.trim() : '',
-      category: category || 'Commercial',
       defaultSpecifications: defaultSpecifications || [],
       createdBy: req.user.userId
     };
 
-    const truckType = new TruckType(truckTypeData);
-    await truckType.save();
+    const bodyType = new BodyType(bodyTypeData);
+    await bodyType.save();
 
-    const populatedTruckType = await TruckType.findById(truckType._id)
+    const populatedBodyType = await BodyType.findById(bodyType._id)
       .populate('createdBy', 'fullName email');
 
     res.status(201).json({
       success: true,
-      data: populatedTruckType,
-      message: 'Truck type created successfully'
+      data: populatedBodyType,
+      message: 'Body type created successfully'
     });
   } catch (error) {
-    // console.error('Error creating truck type:', error);
-    
     // Handle specific validation errors
     if (error.name === 'ValidationError') {
       const validationErrors = Object.values(error.errors).map(err => err.message);
@@ -191,9 +209,16 @@ router.post('/', authenticateToken, authorize(['truck_create']), async (req, res
     
     // Handle duplicate key error
     if (error.code === 11000) {
+      const duplicateField = Object.keys(error.keyPattern || {})[0];
+      if (duplicateField === 'shortName') {
+        return res.status(400).json({
+          success: false,
+          message: 'Body type short name already exists'
+        });
+      }
       return res.status(400).json({
         success: false,
-        message: 'Truck type name already exists'
+        message: 'Body type name already exists'
       });
     }
     
@@ -205,21 +230,36 @@ router.post('/', authenticateToken, authorize(['truck_create']), async (req, res
 });
 
 /**
- * PUT /api/truck-types/:id
- * Update existing truck type
- * Required Permission: truck_update
+ * PUT /api/body-types/:id
+ * Update existing body type
+ * Required Permission: placeholder_test
  */
 router.put('/:id', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, description, category, defaultSpecifications } = req.body;
+    const { name, shortName, description, defaultSpecifications } = req.body;
     
     // Validate required fields
     if (name !== undefined && (!name || !name.trim())) {
       return res.status(400).json({
         success: false,
-        message: 'Truck type name is required'
+        message: 'Body type name is required'
       });
+    }
+    
+    if (shortName !== undefined) {
+      if (!shortName || !shortName.trim()) {
+        return res.status(400).json({
+          success: false,
+          message: 'Body type short name is required'
+        });
+      }
+      if (shortName.trim().length > 20) {
+        return res.status(400).json({
+          success: false,
+          message: 'Short name must be 20 characters or less'
+        });
+      }
     }
 
     // Validate defaultSpecifications structure if provided
@@ -251,35 +291,33 @@ router.put('/:id', authenticateToken, authorize(['placeholder_test']), async (re
     }
 
     const updateData = {
-      ...(name !== undefined && { name: name.trim() }),
+      ...(name !== undefined && { name: toTitleCase(name) }),
+      ...(shortName !== undefined && { shortName: shortName.trim().toUpperCase() }),
       ...(description !== undefined && { description: description ? description.trim() : '' }),
-      ...(category !== undefined && { category }),
       ...(defaultSpecifications !== undefined && { defaultSpecifications }),
       lastModifiedBy: req.user.userId
     };
 
-    const truckType = await TruckType.findByIdAndUpdate(
+    const bodyType = await BodyType.findByIdAndUpdate(
       id,
       updateData,
       { new: true, runValidators: true }
     ).populate('createdBy', 'fullName email')
      .populate('lastModifiedBy', 'fullName email');
 
-    if (!truckType) {
+    if (!bodyType) {
       return res.status(404).json({
         success: false,
-        message: 'Truck type not found'
+        message: 'Body type not found'
       });
     }
 
     res.json({
       success: true,
-      data: truckType,
-      message: 'Truck type updated successfully'
+      data: bodyType,
+      message: 'Body type updated successfully'
     });
   } catch (error) {
-    // console.error('Error updating truck type:', error);
-    
     // Handle specific validation errors
     if (error.name === 'ValidationError') {
       const validationErrors = Object.values(error.errors).map(err => err.message);
@@ -292,9 +330,16 @@ router.put('/:id', authenticateToken, authorize(['placeholder_test']), async (re
     
     // Handle duplicate key error
     if (error.code === 11000) {
+      const duplicateField = Object.keys(error.keyPattern || {})[0];
+      if (duplicateField === 'shortName') {
+        return res.status(400).json({
+          success: false,
+          message: 'Body type short name already exists'
+        });
+      }
       return res.status(400).json({
         success: false,
-        message: 'Truck type name already exists'
+        message: 'Body type name already exists'
       });
     }
     
@@ -305,101 +350,40 @@ router.put('/:id', authenticateToken, authorize(['placeholder_test']), async (re
   }
 });
 
-
 /**
- * DELETE /api/truck-types/:id
- * Delete truck type (checks for dependencies)
+ * DELETE /api/body-types/:id
+ * Delete body type (checks for dependencies)
  * Required Permission: truck_delete
  */
 router.delete('/:id', authenticateToken, authorize(['truck_delete']), async (req, res) => {
   try {
     const { id } = req.params;
 
-    const truckType = await TruckType.findById(id);
-    if (!truckType) {
+    const bodyType = await BodyType.findById(id);
+    if (!bodyType) {
       return res.status(404).json({
         success: false,
-        message: 'Truck type not found'
+        message: 'Body type not found'
       });
     }
 
-    // Check if truck type is being used by any drawing specifications
+    // Check if body type is being used by any drawing specifications
     const usageCount = await DrawingSpecification.countDocuments({ truckType: id });
 
     if (usageCount > 0) {
       return res.status(400).json({
         success: false,
-        message: `Cannot delete truck type. It is being used by ${usageCount} drawing specification(s).`
+        message: `Cannot delete body type. It is being used by ${usageCount} drawing specification(s).`
       });
     }
 
-    await TruckType.findByIdAndDelete(id);
+    await BodyType.findByIdAndDelete(id);
 
     res.json({
       success: true,
-      message: 'Truck type deleted successfully'
+      message: 'Body type deleted successfully'
     });
   } catch (error) {
-    // console.error('Error deleting truck type:', error);
-    res.status(400).json({
-      success: false,
-      message: error.message
-    });
-  }
-});
-
-// Get truck type statistics
-/**
- * GET /api/truck-types/stats/overview
- * Get truck types statistics and overview
- * Required Permission: truck_view
- */
-router.get('/stats/overview', authenticateToken, authorize(['truck_view']), async (req, res) => {
-  try {
-    const stats = await TruckType.aggregate([
-      {
-        $group: {
-          _id: null,
-          totalTruckTypes: { $sum: 1 },
-          byCategory: {
-            $push: '$category'
-          }
-        }
-      },
-      {
-        $project: {
-          _id: 0,
-          totalTruckTypes: 1,
-          categoryBreakdown: {
-            $reduce: {
-              input: '$byCategory',
-              initialValue: {},
-              in: {
-                $mergeObjects: [
-                  '$$value',
-                  {
-                    $arrayToObject: [
-                      [{ k: '$$this', v: { $add: [{ $ifNull: [{ $getField: { field: '$$this', input: '$$value' } }, 0] }, 1] } }]
-                    ]
-                  }
-                ]
-              }
-            }
-          }
-        }
-      }
-    ]);
-
-    res.json({
-      success: true,
-      data: stats[0] || {
-        totalTruckTypes: 0,
-        categoryBreakdown: {}
-      },
-      message: 'Statistics retrieved successfully'
-    });
-  } catch (error) {
-    // console.error('Error getting statistics:', error);
     res.status(400).json({
       success: false,
       message: error.message
