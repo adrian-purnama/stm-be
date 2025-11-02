@@ -2,8 +2,18 @@ const mongoose = require('mongoose');
 
 // Quotation Header Schema - shared information across all offers
 const quotationHeaderSchema = new mongoose.Schema({
-  // User ownership - tied to whoever created it
-  userId: {
+  // User roles - clear separation of responsibilities
+  requesterId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true
+  },
+  approverId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true
+  },
+  creatorId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
     required: true
@@ -73,7 +83,9 @@ const quotationHeaderSchema = new mongoose.Schema({
 
 // Indexes for better performance
 quotationHeaderSchema.index({ quotationNumber: 1 }, { unique: true });
-quotationHeaderSchema.index({ userId: 1 });
+quotationHeaderSchema.index({ requesterId: 1 });
+quotationHeaderSchema.index({ approverId: 1 });
+quotationHeaderSchema.index({ creatorId: 1 });
 quotationHeaderSchema.index({ customerName: 1 });
 quotationHeaderSchema.index({ createdAt: -1 });
 

@@ -136,7 +136,7 @@ const formatPrice = (price) => {
   return `${integerPart},${parts[1]}`;
 };
 
-// Calculate follow-up status and color
+// Calculate follow-up status and color (exported for use in routes)
 const getFollowUpStatus = (lastFollowUpDate) => {
   if (!lastFollowUpDate) {
     return { status: 'danger', color: 'red', label: 'Never Followed Up' };
@@ -341,7 +341,10 @@ const getQuotationOfferById = async (offerId) => {
 
 // Get all offers for a quotation with revision hierarchy
 const getQuotationOffers = async (quotationNumber) => {
-  const header = await QuotationHeader.findOne({ quotationNumber }).populate('userId', 'fullName email');
+  const header = await QuotationHeader.findOne({ quotationNumber })
+    .populate('requesterId', 'fullName email')
+    .populate('approverId', 'fullName email')
+    .populate('creatorId', 'fullName email');
   if (!header) {
     throw new Error('Quotation header not found');
   }
@@ -550,14 +553,33 @@ const deleteQuotationOffer = async (offerId) => {
 };
 
 // Get quotations with pagination and filters
-const getQuotations = async (filters = {}, pagination = { page: 1, limit: 10 }) => {
+const getQuotations = async (filters = {}, pagination = { page: 1, limit: 10 }, options = {}) => {
   const { page, limit } = pagination;
+  const { lightweight = false } = options;
   const skip = (page - 1) * limit;
 
   // Build query for headers
   const headerQuery = {};
-  if (filters.userId) {
-    headerQuery.userId = filters.userId;
+  
+  // Handle specific user field filters first
+  if (filters.requesterId) {
+    headerQuery.requesterId = filters.requesterId;
+  }
+  if (filters.approverId) {
+    headerQuery.approverId = filters.approverId;
+  }
+  if (filters.creatorId) {
+    headerQuery.creatorId = filters.creatorId;
+  }
+  
+  // Handle generic userId filter (for backward compatibility)
+  if (filters.userId && !filters.requesterId && !filters.approverId && !filters.creatorId) {
+    // Support both old userId filter and new user field filters
+    headerQuery.$or = [
+      { requesterId: filters.userId },
+      { approverId: filters.userId },
+      { creatorId: filters.userId }
+    ];
   }
   if (filters.customer) {
     headerQuery.customerName = new RegExp(filters.customer, 'i');
@@ -583,20 +605,59 @@ const getQuotations = async (filters = {}, pagination = { page: 1, limit: 10 }) 
     }
   }
 
-  // Get headers with pagination and populate user data
-  const headers = await QuotationHeader.find(headerQuery)
-    .populate('userId', 'fullName email')
-    .sort({ createdAt: -1 })
-    .skip(skip)
-    .limit(limit);
+  // Get headers with pagination
+  // Skip population in lightweight mode for instant loading
+  let headers;
+  if (lightweight) {
+    // Ultra-lightweight: no population, minimal fields only
+    headers = await QuotationHeader.find(headerQuery)
+      .select('_id quotationNumber createdAt updatedAt requesterId approverId creatorId status lastFollowUpDate')
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean(); // Use lean() for faster queries without Mongoose document overhead
+  } else {
+    // Full mode: populate user data
+    headers = await QuotationHeader.find(headerQuery)
+      .populate('requesterId', 'fullName email')
+      .populate('approverId', 'fullName email')
+      .populate('creatorId', 'fullName email')
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
+  }
 
   // Get total count
   const total = await QuotationHeader.countDocuments(headerQuery);
 
-  // For each header, get its offers with grouping
+  // For each header, get its offers with grouping (skip in lightweight mode)
   const quotations = [];
   for (const header of headers) {
     try {
+      // Skip fetching offers in lightweight mode for faster initial load
+      if (lightweight) {
+        // In lightweight mode, header is already a plain object from lean()
+        // Only include minimal fields
+        const headerObj = header.toObject ? header.toObject() : header;
+        quotations.push({
+          header: {
+            _id: headerObj._id,
+            quotationNumber: headerObj.quotationNumber,
+            createdAt: headerObj.createdAt,
+            updatedAt: headerObj.updatedAt,
+            requesterId: headerObj.requesterId, // Just the ID, no population
+            approverId: headerObj.approverId, // Just the ID, no population
+            creatorId: headerObj.creatorId, // Just the ID, no population
+            status: headerObj.status,
+            lastFollowUpDate: headerObj.lastFollowUpDate,
+            // Skip followUpStatus calculation to avoid aggregation overhead
+            // Skip other fields like customerName, marketingName, etc. to keep it minimal
+          },
+          offers: []
+        });
+        continue;
+      }
+      
       // Use the grouped structure from getQuotationOffers
       const result = await getQuotationOffers(header.quotationNumber);
       let groupedOffers = result.offers;

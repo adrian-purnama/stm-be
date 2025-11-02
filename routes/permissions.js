@@ -96,6 +96,7 @@ router.post('/', authenticateToken, authorize(['placeholder_test']), async (req,
         return sendErrorResponse(res, 404, 'Permission category not found');
       }
     }
+    
     // If categoryName is provided, find or create category
     else if (categoryName) {
       category = await PermissionCategory.findOne({ 
@@ -125,7 +126,14 @@ router.post('/', authenticateToken, authorize(['placeholder_test']), async (req,
       createdBy: req.user.userId
     });
 
-    await permission.save();
+    try{
+
+      await permission.save();
+    } catch (error) {
+      console.log("ERROR", error);
+      return sendErrorResponse(res, 400, 'Permission creation failed');
+    }
+    
     await permission.populate('category', 'name');
 
     sendSuccessResponse(res, 201, 'Permission created successfully', permission);

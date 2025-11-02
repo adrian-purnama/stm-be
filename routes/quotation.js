@@ -10,6 +10,9 @@ const { authenticateToken, authorize } = require('../middleware/auth');
 const QuotationHeader = require('../models/quotationHeader.model');
 const QuotationOffer = require('../models/quotationOffer.model');
 const OfferItem = require('../models/offerItem.model');
+const User = require('../models/user.model');
+const { sendQuotationNotificationEmail } = require('../utils/emailUtils');
+const { hasPermission, hasAnyPermission, getAllUserPermissions } = require('../utils/permissionHelper');
 const {
   createQuotationHeader,
   createQuotationOffer,
@@ -28,18 +31,15 @@ const {
   migrateOfferNumbers
 } = require('../utils/quotationHelper');
 
-// =============================================================================
-// QUOTATION LISTING ROUTES
-// =============================================================================
+// ============================================================================
+// QUOTATION MANAGEMENT ROUTES
+// ============================================================================
 
-/**
- * GET /api/quotations
- * Permission: placeholder_test (temporary - should be quotation_view)
- * Description: Get filtered quotations based on user role and permissions
- */
-router.get('/', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
+// Get all quotations for the authenticated user
+router.get('/', authenticateToken, authorize(['quotation_view']), async (req, res) => {
   try {
-    const { page = 1, limit = 10, filterMode = 'all', ...filters } = req.query;
+    const { page = 1, limit = 10, filterMode = 'all', lightweight = 'false', ...filters } = req.query;
+    const isLightweight = lightweight === 'true' || lightweight === '1';
     
     // Get user with permissions
     const user = await require('../models/user.model').findById(req.user.userId).populate('permissions');
@@ -68,7 +68,7 @@ router.get('/', authenticateToken, authorize(['placeholder_test']), async (req, 
       }
     } else if (filterMode === 'created_by_me') {
       // Show only quotations created by this user
-      userFilters.userId = req.user.userId;
+      userFilters.creatorId = req.user.userId;
     } else if (filterMode === 'approve_rfq') {
       // Show only RFQs where user is the approver (this is handled in RFQ route, not here)
       // This filter mode is not applicable for quotations
@@ -76,9 +76,19 @@ router.get('/', authenticateToken, authorize(['placeholder_test']), async (req, 
         success: false,
         message: 'approve_rfq filter mode is not applicable for quotations'
       });
+    } else if (filterMode === 'all_viewer') {
+      // filterMode === 'all_viewer' - Show all quotations for users with all_quotation_viewer permission
+      const hasAllQuotationViewerPermission = userPermissions.includes('all_quotation_viewer');
+      
+      if (!hasAllQuotationViewerPermission) {
+        return res.status(403).json({
+          success: false,
+          message: 'Access denied. All quotation viewer permission required.'
+        });
+      }
+      // No additional filtering needed for users with all_quotation_viewer permission
     } else {
       // filterMode === 'all' - Show all quotations (admin/manager view)
-      // Only allow if user has admin/manager permissions
       const hasAdminPermission = userPermissions.includes('quotation_admin') || 
                                  userPermissions.includes('admin') ||
                                  userPermissions.includes('manager');
@@ -92,45 +102,69 @@ router.get('/', authenticateToken, authorize(['placeholder_test']), async (req, 
       // No additional filtering needed for admin users
     }
     
-    const result = await getQuotations(userFilters, { page: parseInt(page), limit: parseInt(limit) });
+    const result = await getQuotations(userFilters, { page: parseInt(page), limit: parseInt(limit) }, { lightweight: isLightweight });
     
     // Additional security check: Filter out quotations the user shouldn't see
     const { RFQ } = require('../models/rfq.model');
     const filteredQuotations = [];
     
+    // Check if user has all_quotation_viewer permission - if so, bypass individual access checks
+    const hasAllQuotationViewerPermission = userPermissions.includes('all_quotation_viewer');
+    const hasAdminPermission = userPermissions.includes('quotation_admin') || 
+                               userPermissions.includes('admin') ||
+                               userPermissions.includes('manager');
+    
     for (const quotation of result.quotations) {
       let canAccess = false;
       
-      // Check if user is the creator
-      if (quotation.header.userId.toString() === req.user.userId.toString()) {
+      // If user has all_quotation_viewer or admin permission, or if filterMode is all/all_viewer, they can see all quotations
+      if (hasAllQuotationViewerPermission || hasAdminPermission || filterMode === 'all' || filterMode === 'all_viewer') {
         canAccess = true;
-      }
+      } else {
       
-      // Check if user is the requester (from RFQ)
-      if (!canAccess) {
-        const rfq = await RFQ.findOne({
-          quotationId: quotation.header._id,
-          requesterId: req.user.userId
-        });
-        if (rfq) {
+        // Check if user is the creator, requester, or approver
+        // Handle both lightweight mode (just ID) and full mode (populated object)
+        const header = quotation.header;
+        
+        // Extract user IDs - handle both ObjectId and populated object
+        const getUserId = (userField) => {
+          if (!userField) return null;
+          if (typeof userField === 'object' && userField._id) {
+            return userField._id.toString();
+          }
+          return userField.toString();
+        };
+        
+        const creatorId = getUserId(header.creatorId);
+        const requesterId = getUserId(header.requesterId);
+        const approverId = getUserId(header.approverId);
+        const userId = req.user.userId.toString();
+        
+        if (creatorId === userId || requesterId === userId || approverId === userId) {
           canAccess = true;
         }
-      }
-      
-      // Check if user is the approver (from RFQ)
-      if (!canAccess) {
-        const rfq = await RFQ.findOne({
-          quotationId: quotation.header._id,
-          approverId: req.user.userId
-        });
-        if (rfq) {
-          canAccess = true;
+        
+        // Check if user is the requester (from RFQ)
+        if (!canAccess) {
+          const rfq = await RFQ.findOne({
+            quotationId: quotation.header._id,
+            requesterId: req.user.userId
+          });
+          if (rfq) {
+            canAccess = true;
+          }
         }
-      }
-      
-      // Admin users can see all quotations (already checked above)
-      if (filterMode === 'all') {
-        canAccess = true;
+        
+        // Check if user is the approver (from RFQ)
+        if (!canAccess) {
+          const rfq = await RFQ.findOne({
+            quotationId: quotation.header._id,
+            approverId: req.user.userId
+          });
+          if (rfq) {
+            canAccess = true;
+          }
+        }
       }
       
       if (canAccess) {
@@ -141,6 +175,18 @@ router.get('/', authenticateToken, authorize(['placeholder_test']), async (req, 
     // Update result with filtered quotations
     result.quotations = filteredQuotations;
     
+    // If lightweight mode, return only minimal safe headers (fast initial load)
+    // Use data directly from getQuotations helper which already handles lightweight mode
+    if (isLightweight) {
+      return res.json({
+        success: true,
+        data: result.quotations, // Already in minimal format from helper
+        pagination: result.pagination,
+        message: 'Quotation headers retrieved successfully'
+      });
+    }
+    
+    // Full mode - include all offers and details
     // Simplify the response - only include essential data
     const simplifiedQuotations = result.quotations.map(quotation => ({
       header: {
@@ -219,14 +265,14 @@ router.get('/', authenticateToken, authorize(['placeholder_test']), async (req, 
  */
 router.get('/all', authenticateToken, authorize(['all_quotation_viewer']), async (req, res) => {
   try {
-    const { page = 1, limit = 10, ...filters } = req.query;
+    const { page = 1, limit = 10, filterMode = 'all_viewer', ...filters } = req.query;
     
     // Get user with permissions
     const user = await require('../models/user.model').findById(req.user.userId).populate('permissions');
     const userPermissions = user.permissions.map(p => p.name);
     
     // Check if user has all_quotation_viewer permission
-    const hasAllQuotationViewerPermission = userPermissions.includes('all_quotation_viewer');
+    const hasAllQuotationViewerPermission = true
     
     if (!hasAllQuotationViewerPermission) {
       return res.status(403).json({
@@ -235,8 +281,11 @@ router.get('/all', authenticateToken, authorize(['all_quotation_viewer']), async
       });
     }
     
+    // Set filterMode to all_viewer for this route
+    const userFilters = { ...filters, filterMode: 'all_viewer' };
+    
     // No additional filtering needed - show all quotations
-    const result = await getQuotations(filters, { page: parseInt(page), limit: parseInt(limit) });
+    const result = await getQuotations(userFilters, { page: parseInt(page), limit: parseInt(limit) }, { lightweight: false });
     
     // Simplify the response - only include essential data
     const simplifiedQuotations = result.quotations.map(quotation => ({
@@ -308,7 +357,7 @@ router.get('/all', authenticateToken, authorize(['all_quotation_viewer']), async
 });
 
 // Debug endpoint to check offer items
-router.get('/debug/offer-items', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
+router.get('/debug/offer-items', authenticateToken, authorize(['quotation_view']), async (req, res) => {
   try {
     const { quotationNumber } = req.query;
     
@@ -528,18 +577,45 @@ router.post('/', authenticateToken, authorize(['quotation_create']), async (req,
       }
     }
 
+    // Prepare user fields for quotation header
+    let userFields = {
+      requesterId: req.user.userId,
+      approverId: req.user.userId, // Default to current user, can be updated later
+      creatorId: req.user.userId,
+      marketingName: req.user.fullName ? req.user.fullName.split(' ')[0] : req.user.email
+    };
+    
+    // If RFQ was provided, use RFQ user assignments
+    if (rfqId) {
+      const { RFQ } = require('../models/rfq.model');
+      const rfq = await RFQ.findById(rfqId);
+      if (rfq) {
+        // Get requester details for marketing name
+        const requester = await User.findById(rfq.requesterId).select('fullName email');
+        const marketingName = requester?.fullName ? requester.fullName.split(' ')[0] : requester?.email || 'Unknown';
+        
+        userFields = {
+          requesterId: rfq.requesterId,
+          approverId: rfq.approverId,
+          creatorId: rfq.quotationCreatorId,
+          marketingName: marketingName
+        };
+      }
+    }
+    
     // Create quotation header
     const header = await createQuotationHeader({
       ...headerData,
-      userId: req.user.userId,
-      marketingName: req.user.fullName ? req.user.fullName.split(' ')[0] : req.user.email
+      ...userFields
     });
 
     // Create first offer (now with RFQ data if applicable)
     const offer = await createQuotationOffer(header.quotationNumber, {
       ...offerData,
-      userId: req.user.userId,
-      marketingName: req.user.fullName ? req.user.fullName.split(' ')[0] : req.user.email
+      requesterId: header.requesterId,
+      approverId: header.approverId,
+      creatorId: header.creatorId,
+      marketingName: header.marketingName
     });
 
     // If RFQ was provided, update its status
@@ -552,6 +628,36 @@ router.post('/', authenticateToken, authorize(['quotation_create']), async (req,
         quotationId: header._id,
         quotationCreatedAt: new Date()
       });
+    }
+
+    // Send email notifications
+    try {
+      // Get user details for email notifications
+      const requester = await User.findById(header.requesterId).select('email fullName');
+      const approver = await User.findById(header.approverId).select('email fullName');
+      
+      // Email to requester
+      if (requester && requester.email) {
+        sendQuotationNotificationEmail(
+          requester.email,
+          header.quotationNumber,
+          'created',
+          requester.fullName || requester.email
+        );
+      }
+      
+      // Email to approver (if different from requester)
+      if (approver && approver.email && approver._id.toString() !== requester._id.toString()) {
+        sendQuotationNotificationEmail(
+          approver.email,
+          header.quotationNumber,
+          'created',
+          approver.fullName || approver.email
+        );
+      }
+    } catch (emailError) {
+      console.error('Error sending email notifications:', emailError);
+      // Don't fail the request if email fails
     }
 
     res.status(201).json({
@@ -569,16 +675,7 @@ router.post('/', authenticateToken, authorize(['quotation_create']), async (req,
 });
 
 // Get specific quotation by ID
-// =============================================================================
-// QUOTATION RETRIEVAL ROUTES
-// =============================================================================
-
-/**
- * GET /api/quotations/by-id/:quotationId
- * Permission: placeholder_test (temporary - should be quotation_view)
- * Description: Get quotation by ID
- */
-router.get('/by-id/:quotationId', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
+router.get('/by-id/:quotationId', authenticateToken, authorize(['quotation_view']), async (req, res) => {
   try {
     const { quotationId } = req.params;
     
@@ -614,13 +711,46 @@ router.get('/by-id/:quotationId', authenticateToken, authorize(['placeholder_tes
   }
 });
 
+// Get full header details for a quotation (with populated fields) - for async loading
+router.get('/:quotationNumber/header', authenticateToken, authorize(['quotation_view']), async (req, res) => {
+  try {
+    const { quotationNumber } = req.params;
+    const { getFollowUpStatus } = require('../utils/quotationHelper');
+    const QuotationHeader = require('../models/quotationHeader.model');
+    
+    const header = await QuotationHeader.findOne({ quotationNumber })
+      .populate('requesterId', 'fullName email')
+      .populate('approverId', 'fullName email')
+      .populate('creatorId', 'fullName email');
+    
+    if (!header) {
+      return res.status(404).json({
+        success: false,
+        message: 'Quotation not found'
+      });
+    }
+
+    const followUpStatus = getFollowUpStatus(header.lastFollowUpDate);
+
+    res.json({
+      success: true,
+      data: {
+        ...header.toObject(),
+        followUpStatus
+      },
+      message: 'Header details retrieved successfully'
+    });
+  } catch (error) {
+    console.error('Error fetching header details:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+});
+
 // Get specific quotation by quotation number
-/**
- * GET /api/quotations/:quotationNumber
- * Permission: placeholder_test (temporary - should be quotation_view)
- * Description: Get quotation by quotation number
- */
-router.get('/:quotationNumber', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
+router.get('/:quotationNumber', authenticateToken, authorize(['quotation_view']), async (req, res) => {
   try {
     const { quotationNumber } = req.params;
     const result = await getQuotationOffers(quotationNumber);
@@ -641,16 +771,7 @@ router.get('/:quotationNumber', authenticateToken, authorize(['placeholder_test'
 });
 
 // Update quotation header
-// =============================================================================
-// QUOTATION UPDATE ROUTES
-// =============================================================================
-
-/**
- * PUT /api/quotations/:quotationNumber
- * Permission: placeholder_test (temporary - should be quotation_edit)
- * Description: Update quotation header
- */
-router.put('/:quotationNumber', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
+router.put('/:quotationNumber', authenticateToken, authorize(['quotation_edit']), async (req, res) => {
   try {
     const { quotationNumber } = req.params;
     const updateData = req.body;
@@ -674,12 +795,7 @@ router.put('/:quotationNumber', authenticateToken, authorize(['placeholder_test'
 });
 
 // Delete quotation (header + all offers + all items)
-/**
- * DELETE /api/quotations/:quotationNumber
- * Permission: placeholder_test (temporary - should be quotation_delete)
- * Description: Delete quotation
- */
-router.delete('/:quotationNumber', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
+router.delete('/:quotationNumber', authenticateToken, authorize(['quotation_delete']), async (req, res) => {
   try {
     const { quotationNumber } = req.params;
     const result = await getQuotationOffers(quotationNumber);
@@ -731,12 +847,7 @@ router.delete('/:quotationNumber', authenticateToken, authorize(['placeholder_te
 // ============================================================================
 
 // Update quotation status
-/**
- * PATCH /api/quotations/:quotationNumber/status
- * Permission: placeholder_test (temporary - should be quotation_edit)
- * Description: Update quotation status
- */
-router.patch('/:quotationNumber/status', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
+router.patch('/:quotationNumber/status', authenticateToken, authorize(['quotation_edit']), async (req, res) => {
   try {
     const { quotationNumber } = req.params;
     const { status, reason, selectedOfferId, selectedOfferItemIds } = req.body;
@@ -816,16 +927,7 @@ router.patch('/:quotationNumber/status', authenticateToken, authorize(['placehol
 // ============================================================================
 
 // Get all offers for a quotation
-// =============================================================================
-// QUOTATION OFFER ROUTES
-// =============================================================================
-
-/**
- * GET /api/quotations/:quotationNumber/offers
- * Permission: placeholder_test (temporary - should be quotation_view)
- * Description: Get all offers for a quotation
- */
-router.get('/:quotationNumber/offers', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
+router.get('/:quotationNumber/offers', authenticateToken, authorize(['quotation_view']), async (req, res) => {
   try {
     const { quotationNumber } = req.params;
     const result = await getQuotationOffers(quotationNumber);
@@ -846,7 +948,7 @@ router.get('/:quotationNumber/offers', authenticateToken, authorize(['placeholde
 });
 
 // Create new offer for a quotation
-router.post('/:quotationId/offers', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
+router.post('/:quotationId/offers', authenticateToken, authorize(['quotation_edit']), async (req, res) => {
   try {
     const { quotationId } = req.params;
     const offerData = req.body;
@@ -870,7 +972,9 @@ router.post('/:quotationId/offers', authenticateToken, authorize(['placeholder_t
 
     const offer = await createQuotationOffer(header.quotationNumber, {
       ...offerData,
-      userId: req.user.userId,
+      requesterId: header.requesterId,
+      approverId: header.approverId,
+      creatorId: header.creatorId,
       marketingName: req.user.fullName ? req.user.fullName.split(' ')[0] : req.user.email
     });
 
@@ -889,7 +993,7 @@ router.post('/:quotationId/offers', authenticateToken, authorize(['placeholder_t
 });
 
 // Update specific offer
-router.put('/:quotationId/offers/:offerId', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
+router.put('/:quotationId/offers/:offerId', authenticateToken, authorize(['quotation_edit']), async (req, res) => {
   try {
     const { quotationId, offerId } = req.params;
     const updateData = req.body;
@@ -928,7 +1032,7 @@ router.put('/:quotationId/offers/:offerId', authenticateToken, authorize(['place
 });
 
 // Delete specific offer
-router.delete('/:quotationId/offers/:offerId', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
+router.delete('/:quotationId/offers/:offerId', authenticateToken, authorize(['quotation_edit']), async (req, res) => {
   try {
     const { quotationId, offerId } = req.params;
 
@@ -980,7 +1084,7 @@ router.delete('/:quotationId/offers/:offerId', authenticateToken, authorize(['pl
 // ============================================================================
 
 // Get all items for a specific offer
-router.get('/:quotationNumber/offers/:offerId/items', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
+router.get('/:quotationNumber/offers/:offerId/items', authenticateToken, authorize(['quotation_view']), async (req, res) => {
   try {
     const { quotationNumber, offerId } = req.params;
 
@@ -1005,7 +1109,7 @@ router.get('/:quotationNumber/offers/:offerId/items', authenticateToken, authori
 });
 
 // Create new item for a specific offer
-router.post('/:quotationNumber/offers/:offerId/items', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
+router.post('/:quotationNumber/offers/:offerId/items', authenticateToken, authorize(['quotation_edit']), async (req, res) => {
   try {
     const { quotationNumber, offerId } = req.params;
     const itemData = req.body;
@@ -1049,7 +1153,7 @@ router.post('/:quotationNumber/offers/:offerId/items', authenticateToken, author
 });
 
 // Update specific offer item
-router.put('/:quotationNumber/offers/:offerId/items/:itemId', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
+router.put('/:quotationNumber/offers/:offerId/items/:itemId', authenticateToken, authorize(['quotation_edit']), async (req, res) => {
   try {
     const { quotationNumber, offerId, itemId } = req.params;
     const updateData = req.body;
@@ -1097,7 +1201,7 @@ router.put('/:quotationNumber/offers/:offerId/items/:itemId', authenticateToken,
 });
 
 // Delete specific offer item
-router.delete('/:quotationNumber/offers/:offerId/items/:itemId', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
+router.delete('/:quotationNumber/offers/:offerId/items/:itemId', authenticateToken, authorize(['quotation_edit']), async (req, res) => {
   try {
     const { quotationNumber, offerId, itemId } = req.params;
 
@@ -1132,7 +1236,7 @@ router.delete('/:quotationNumber/offers/:offerId/items/:itemId', authenticateTok
 });
 
 // Toggle item acceptance status
-router.patch('/:quotationNumber/offers/:offerId/items/:itemId/accept', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
+router.patch('/:quotationNumber/offers/:offerId/items/:itemId/accept', authenticateToken, authorize(['quotation_edit']), async (req, res) => {
   try {
     const { quotationNumber, offerId, itemId } = req.params;
 
@@ -1185,7 +1289,7 @@ router.patch('/:quotationNumber/offers/:offerId/items/:itemId/accept', authentic
 // ============================================================================
 
 // Add progress entry to quotation
-router.post('/:quotationNumber/progress', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
+router.post('/:quotationNumber/progress', authenticateToken, authorize(['quotation_edit']), async (req, res) => {
   try {
     const { quotationNumber } = req.params;
     const { progress } = req.body;
@@ -1211,7 +1315,7 @@ router.post('/:quotationNumber/progress', authenticateToken, authorize(['placeho
 });
 
 // Update last follow-up date
-router.patch('/:quotationNumber/follow-up', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
+router.patch('/:quotationNumber/follow-up', authenticateToken, authorize(['quotation_edit']), async (req, res) => {
   try {
     const { quotationNumber } = req.params;
 
@@ -1239,7 +1343,7 @@ router.patch('/:quotationNumber/follow-up', authenticateToken, authorize(['place
 // ============================================================================
 
 // Generate new quotation number
-router.get('/generate/number', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
+router.get('/generate/number', authenticateToken, authorize(['quotation_create']), async (req, res) => {
   try {
     const quotationNumber = await generateQuotationNumber();
     res.json({

@@ -29,7 +29,8 @@ const seedDatabase = async (adminUserId) => {
       { name: 'quotation', displayName: 'Quotation Management', description: 'Quotation creation and management' },
       { name: 'notes', displayName: 'Notes Management', description: 'Notes and image management' },
       { name: 'analytics', displayName: 'Analytics', description: 'Analytics and reporting permissions' },
-      { name: 'system', displayName: 'System Administration', description: 'System-wide administration permissions' }
+      { name: 'system', displayName: 'System Administration', description: 'System-wide administration permissions' },
+      { name: 'roles', displayName: 'User Roles', description: 'Predefined Bundled User Roles' }
     ];
 
     const createdCategories = [];
@@ -79,6 +80,11 @@ const seedDatabase = async (adminUserId) => {
       { name: 'quotation_create', displayName: 'Create Quotations', description: 'Create new quotations', category: 'quotation' },
       { name: 'quotation_edit', displayName: 'Edit Quotations', description: 'Edit existing quotations', category: 'quotation' },
       { name: 'quotation_delete', displayName: 'Delete Quotations', description: 'Delete quotations', category: 'quotation' },
+      { name: 'all_quotation_viewer', displayName: 'All Quotation Viewer', description: 'View All Quotations Made Regardles of Team', category: 'quotation' },
+      { name: 'approve_rfq', displayName: 'Approve RFQ', description: 'Approve or Reject RFQ Requests', category: 'quotation' },
+      { name: 'quotation_requester', displayName: 'Quotation Requester', description: 'Create RFQ Requests', category: 'quotation' },
+      { name: 'engineer_review', displayName: 'Engineer Review', description: 'Review RFQs in engineering stage', category: 'quotation' },
+      { name: 'quotation_admin', displayName: 'Quotation Admin', description: 'Full quotation administration access', category: 'quotation' },
 
       // Notes Management
       { name: 'notes_view', displayName: 'View Notes', description: 'View notes and images', category: 'notes' },
@@ -93,6 +99,7 @@ const seedDatabase = async (adminUserId) => {
       // System Administration
       { name: 'system_admin', displayName: 'System Admin', description: 'Full system administration access', category: 'system' },
       { name: 'system_config', displayName: 'System Config', description: 'System configuration access', category: 'system' },
+      { name: 'admin', displayName: 'Admin', description: 'General admin access', category: 'system' },
       { name: 'placeholder_test', displayName: 'Placeholder Test', description: 'PLaceholder for testing purposes', category: 'system' }
     ];
 
@@ -120,7 +127,7 @@ const seedDatabase = async (adminUserId) => {
         name: 'super_admin',
         displayName: 'Super Administrator',
         description: 'Full system access with all permissions',
-        category: 'system',
+        category: 'roles',
         includes: individualPermissions.map(p => p.name) // All individual permissions
       }
     ];
@@ -773,15 +780,12 @@ router.get('/ispermission/:permission', authenticateToken, async (req, res) => {
       return sendErrorResponse(res, 404, 'User not found');
     }
 
-    // Check if user has the specific permission
-    const hasPermission = user.permissions.some(userPermission => {
-      const nameMatch = userPermission.name === permission;
-      const idMatch = userPermission._id.toString() === permission;
-      return nameMatch || idMatch;
-    });
+    // Check if user has the specific permission using the proper permission helper
+    const { hasPermission } = require('../utils/permissionHelper');
+    const hasPermissionResult = hasPermission(user, permission);
 
     sendSuccessResponse(res, 200, {
-      hasPermission,
+      hasPermission: hasPermissionResult,
       permission,
       userId: user._id,
       userEmail: user.email,
@@ -794,6 +798,129 @@ router.get('/ispermission/:permission', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('Error checking permission:', error);
     sendErrorResponse(res, 500, 'Error checking permission', error.message);
+  }
+});
+
+// =============================================================================
+// RFQ FOLDER MANAGEMENT ROUTES
+// =============================================================================
+
+/**
+ * GET /api/auth/folders
+ * Permission: Any authenticated user
+ * Description: Get current user's RFQ folders
+ */
+router.get('/folders', authenticateToken, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.userId);
+    
+    if (!user) {
+      return sendErrorResponse(res, 404, 'User not found');
+    }
+
+    sendSuccessResponse(res, 200, 'Folders fetched successfully', {
+      folders: user.rfqFolders || []
+    });
+  } catch (error) {
+    console.error('Error fetching folders:', error);
+    sendErrorResponse(res, 500, 'Failed to fetch folders', error.message);
+  }
+});
+
+/**
+ * POST /api/auth/folders
+ * Permission: Any authenticated user
+ * Description: Create a new RFQ folder
+ */
+router.post('/folders', authenticateToken, async (req, res) => {
+  try {
+    const { name, color } = req.body;
+    
+    if (!name || !name.trim()) {
+      return sendErrorResponse(res, 400, 'Folder name is required');
+    }
+
+    const user = await User.findById(req.user.userId);
+    
+    if (!user) {
+      return sendErrorResponse(res, 404, 'User not found');
+    }
+
+    // Add folder to user's rfqFolders array
+    user.rfqFolders.push({
+      name: name.trim(),
+      color: color || '#3B82F6'
+    });
+
+    await user.save();
+
+    sendSuccessResponse(res, 201, 'Folder created successfully', {
+      folder: user.rfqFolders[user.rfqFolders.length - 1]
+    });
+  } catch (error) {
+    console.error('Error creating folder:', error);
+    sendErrorResponse(res, 500, 'Failed to create folder', error.message);
+  }
+});
+
+/**
+ * PUT /api/auth/folders/:folderId
+ * Permission: Any authenticated user
+ * Description: Update an RFQ folder
+ */
+router.put('/folders/:folderId', authenticateToken, async (req, res) => {
+  try {
+    const { folderId } = req.params;
+    const { name, color } = req.body;
+    
+    const user = await User.findById(req.user.userId);
+    
+    if (!user) {
+      return sendErrorResponse(res, 404, 'User not found');
+    }
+
+    const folder = user.rfqFolders.id(folderId);
+    
+    if (!folder) {
+      return sendErrorResponse(res, 404, 'Folder not found');
+    }
+
+    if (name !== undefined) folder.name = name.trim();
+    if (color !== undefined) folder.color = color;
+
+    await user.save();
+
+    sendSuccessResponse(res, 200, 'Folder updated successfully', {
+      folder
+    });
+  } catch (error) {
+    console.error('Error updating folder:', error);
+    sendErrorResponse(res, 500, 'Failed to update folder', error.message);
+  }
+});
+
+/**
+ * DELETE /api/auth/folders/:folderId
+ * Permission: Any authenticated user
+ * Description: Delete an RFQ folder
+ */
+router.delete('/folders/:folderId', authenticateToken, async (req, res) => {
+  try {
+    const { folderId } = req.params;
+    
+    const user = await User.findById(req.user.userId);
+    
+    if (!user) {
+      return sendErrorResponse(res, 404, 'User not found');
+    }
+
+    user.rfqFolders.pull({ _id: folderId });
+    await user.save();
+
+    sendSuccessResponse(res, 200, 'Folder deleted successfully');
+  } catch (error) {
+    console.error('Error deleting folder:', error);
+    sendErrorResponse(res, 500, 'Failed to delete folder', error.message);
   }
 });
 
