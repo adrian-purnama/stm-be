@@ -486,7 +486,7 @@ const formatNotes = (selectedNotes, excludePPN, paymentTerms) => {
 };
 
 // Generate specification table XML for Word document
-const generateSpecificationTableXML = (specifications, drawingInfo = null, priceInfo = null) => {
+const generateSpecificationTableXML = (specifications, drawingInfo = null, priceInfo = null, leftIndentTwips = 0) => {
   if (!specifications || specifications.length === 0) {
     return '';
   }
@@ -553,6 +553,10 @@ const generateSpecificationTableXML = (specifications, drawingInfo = null, price
   tableXML += '<w:tblPr>';
   tableXML += '<w:tblStyle w:val="TableGrid"/>';
   tableXML += '<w:tblW w:w="0" w:type="auto"/>';
+  // Add left indentation to align with chassis
+  if (leftIndentTwips > 0) {
+    tableXML += `<w:tblInd w:w="${leftIndentTwips}" w:type="dxa"/>`;
+  }
   tableXML += '<w:tblBorders>';
   tableXML += '<w:top w:val="single" w:sz="4" w:space="0" w:color="000000"/>';
   tableXML += '<w:left w:val="single" w:sz="4" w:space="0" w:color="000000"/>';
@@ -900,15 +904,23 @@ const buildItemText = (offerItems, lineOfBusinessType = 'karoseri', drawingNumbe
     const chassis = item.chassis || "";
     const chassisModel = item.chassisModel ? ` - ${item.chassisModel}` : "";
 
-    // Item number with 5-space indent
-    itemText += `     ${itemNumber}.  Karoseri : ${karoseri}\n`;
-    // Chassis with 5 spaces before label (15 spaces total indent)
-    itemText += `   Chassis : ${chassis}${chassisModel}\n`;
+    // Item number with more space before (10 spaces for more spacing)
+    // Calculate padding to align "Chassis" with "Karoseri"
+    // Format: "     ${itemNumber}.  Karoseri : ${karoseri}"
+    // "Karoseri" starts after: 10 spaces + item number + ".  "
+    const itemNumberStr = String(itemNumber);
+    const paddingBeforeKaroseri = 10 + itemNumberStr.length + 3; // 10 spaces + item number length + ".  "
+    
+    itemText += `          ${itemNumber}.  Karoseri : ${karoseri}\n`;
+    // Chassis aligned with Karoseri (same starting position)
+    const chassisPadding = ' '.repeat(paddingBeforeKaroseri);
+    itemText += `${chassisPadding} Chassis : ${chassis}${chassisModel}\n`;
     
     // Karoseri specifications - generate table format
     if (item.specifications && item.specifications.length > 0) {
-      // Add specification label and marker on separate lines
-      itemText += `\n   Spesifikasi:\n`;
+      // Add specification label aligned with chassis
+      const spesifikasiPadding = ' '.repeat(paddingBeforeKaroseri);
+      itemText += `\n${spesifikasiPadding}Spesifikasi:\n`;
       
       // Prepare drawing info for table
       let drawingInfo = null;
@@ -949,7 +961,11 @@ const buildItemText = (offerItems, lineOfBusinessType = 'karoseri', drawingNumbe
       };
       
       // Generate table XML with drawing and price info
-      const tableXML = generateSpecificationTableXML(item.specifications, drawingInfo, priceInfo);
+      // Calculate left indentation to match chassis alignment
+      // Convert spaces to twips: approximately 1 space = 100 twips (reduced for better alignment)
+      // paddingBeforeKaroseri is in spaces, convert to twips
+      const leftIndentTwips = paddingBeforeKaroseri * 60; // 1 space ≈ 100 twips (reduced from 120)
+      const tableXML = generateSpecificationTableXML(item.specifications, drawingInfo, priceInfo, leftIndentTwips);
       if (tableXML) {
         // Use a unique marker that docxtemplater won't process (not in {variable} format)
         // Put marker on its own line with blank lines around it
@@ -1604,28 +1620,27 @@ const generateDocumentXMLFromScratch = async (templateData, tableMap = {}, heade
     const itemLines = templateData.item.split('\n');
     let i = 0;
     while (i < itemLines.length) {
-      const line = itemLines[i].trim();
+      const originalLine = itemLines[i];
+      const trimmedLine = originalLine.trim();
       
-      // Check if this line is a table marker
-      if (tableMap[line]) {
+      // Check if this line is a table marker (check trimmed version for markers)
+      if (tableMap[trimmedLine]) {
         // Insert the table
-        bodyXML += tableMap[line];
+        bodyXML += tableMap[trimmedLine];
         i++;
         continue;
       }
       
-      // Regular text line
-      if (line) {
-        if (line.startsWith('Spesifikasi:')) {
-          bodyXML += createParagraph(line, true, 'left', 30);
-        } else if (line.match(/^\d+\./)) {
-          // Item number line - bold
-          bodyXML += createParagraph(line, true, 'left', 30);
-        } else if (line.startsWith('   ')) {
-          // Indented line - regular
-          bodyXML += createParagraph(line, false, 'left', 30);
+      // Regular text line - preserve leading spaces
+      if (trimmedLine) {
+        if (trimmedLine.startsWith('Spesifikasi:')) {
+          bodyXML += createParagraph(originalLine, true, 'left', 30);
+        } else if (trimmedLine.match(/^\d+\./)) {
+          // Item number line - bold, preserve original spacing
+          bodyXML += createParagraph(originalLine, true, 'left', 30);
         } else {
-          bodyXML += createParagraph(line, false, 'left', 30);
+          // All other lines - preserve original spacing (including leading spaces)
+          bodyXML += createParagraph(originalLine, false, 'left', 30);
         }
       } else {
         // Empty line - add spacing
@@ -1846,7 +1861,8 @@ const generateDocumentXMLFromScratch = async (templateData, tableMap = {}, heade
     sectPrContent += `<w:headerReference w:type="default" r:id="rId${headerRelId}"/>`;
   }
   
-  if (footerRelId) {
+  // Always add footer reference if footerRelId is provided (it should always be provided)
+  if (footerRelId !== null && footerRelId !== undefined) {
     sectPrContent += `<w:footerReference w:type="default" r:id="rId${footerRelId}"/>`;
   }
   
@@ -2582,8 +2598,10 @@ const createDOCXFromScratch = async (templateData, tableMap = {}, imageData = []
   }
   
   // Create header and footer relationship IDs (for document.xml.rels)
-  const headerRelId = relationshipIdCounter++;
-  const footerRelIdForDoc = relationshipIdCounter++;
+  // These must be sequential: rId1 for styles, rId2 for header, rId3 for footer
+  // Note: rId1 is already used for styles.xml in document.xml.rels
+  const headerRelId = 2; // Fixed ID for header in document.xml.rels
+  const footerRelIdForDoc = 3; // Fixed ID for footer in document.xml.rels
   
   // Build header relationships XML first to determine watermark relationship ID
   let headerRelsParts = [];
