@@ -1676,44 +1676,46 @@ const generateDocumentXMLFromScratch = async (templateData, tableMap = {}, heade
     });
   }
   
-  // Add signatory name and contact information with QR code beside it (table layout)
+  // Add QR code between "PT. Sukses Tunggal Mandiri" and marketing name (inline, not absolute)
+  if (qrCodeRelId && qrCodeDocPrId && qrCodePicId) {
+    // Add spacing after "PT. Sukses Tunggal Mandiri"
+    bodyXML += createParagraph('', false, 'left', 40);
+    
+    // QR code size: 1.2 x 1.2 inches
+    const qrWidth = 1.2 * 914400; // 1,097,280 EMU
+    const qrHeight = 1.2 * 914400; // 1,097,280 EMU
+    
+    // Create inline QR code image (not absolutely positioned)
+    const qrCodeImageXML = createImageXML(qrCodeRelId, qrWidth, qrHeight, qrCodeDocPrId, qrCodePicId);
+    
+    // Place QR code left-aligned
+    bodyXML += `<w:p>
+      <w:pPr>
+        <w:jc w:val="left"/>
+        <w:spacing w:after="10" w:line="200" w:lineRule="auto"/>
+      </w:pPr>
+      <w:r>
+        ${qrCodeImageXML}
+      </w:r>
+    </w:p>`;
+    
+    // Add "Signed" text below QR code (left-aligned)
+    bodyXML += `<w:p>
+      <w:pPr>
+        <w:jc w:val="left"/>
+        <w:spacing w:after="30" w:line="200" w:lineRule="auto"/>
+      </w:pPr>
+      <w:r>
+        <w:rPr>${FONT_TAG_WITH_SIZE}</w:rPr>
+        <w:t xml:space="preserve">(Signed Digitally)</w:t>
+      </w:r>
+    </w:p>`;
+  }
+  
+  // Add signatory name and contact information (vertical layout, no table)
   if (templateData.signatory_name && templateData.signatory_name !== 'N/A') {
-    // Add more blank lines before signatory name for better spacing
-    bodyXML += createParagraph('', false, 'left', 40);
-    bodyXML += createParagraph('', false, 'left', 40);
-
-    // Table width: available width (7.1 inches = 10224 DXA)
-    const availableWidth = 10224; // 7.1 inches in DXA
-    // Left column: 60% for text, Right column: 40% for QR code
-    const leftColWidth = Math.floor(availableWidth * 0.6); // ~4.26 inches
-    const rightColWidth = Math.floor(availableWidth * 0.4); // ~2.84 inches
-    
-    // Start table for side-by-side layout
-    bodyXML += `<w:tbl>
-      <w:tblPr>
-        <w:tblW w:w="${availableWidth}" w:type="dxa"/>
-        <w:tblLayout w:type="fixed"/>
-        <w:tblBorders>
-          <w:top w:val="none" w:sz="0" w:space="0" w:color="auto"/>
-          <w:left w:val="none" w:sz="0" w:space="0" w:color="auto"/>
-          <w:bottom w:val="none" w:sz="0" w:space="0" w:color="auto"/>
-          <w:right w:val="none" w:sz="0" w:space="0" w:color="auto"/>
-          <w:insideH w:val="none" w:sz="0" w:space="0" w:color="auto"/>
-          <w:insideV w:val="none" w:sz="0" w:space="0" w:color="auto"/>
-        </w:tblBorders>
-      </w:tblPr>
-      <w:tblGrid>
-        <w:gridCol w:w="${leftColWidth}"/>
-        <w:gridCol w:w="${rightColWidth}"/>
-      </w:tblGrid>
-      <w:tr>`;
-    
-    // Left cell: Signatory information
-    bodyXML += `<w:tc>
-      <w:tcPr>
-        <w:tcW w:w="${leftColWidth}" w:type="dxa"/>
-        <w:vAlign w:val="top"/>
-      </w:tcPr>`;
+    // Add spacing before signatory name
+    bodyXML += createParagraph('', false, 'left', 20);
     
     // Add signatory full name (bold)
     const escapedSignatoryName = escapeXml(templateData.signatory_name);
@@ -1770,55 +1772,6 @@ const generateDocumentXMLFromScratch = async (templateData, tableMap = {}, heade
         </w:r>
       </w:p>`;
     }
-    
-    bodyXML += `</w:tc>`;
-    
-    // Right cell: QR code
-    bodyXML += `<w:tc>
-      <w:tcPr>
-        <w:tcW w:w="${rightColWidth}" w:type="dxa"/>
-        <w:vAlign w:val="top"/>
-      </w:tcPr>`;
-    
-    if (qrCodeRelId && qrCodeDocPrId && qrCodePicId) {
-      // QR code size: 1.2 x 1.2 inches (fits in right column)
-      const qrWidth = 1.2 * 914400; // 1,097,280 EMU
-      const qrHeight = 1.2 * 914400; // 1,097,280 EMU
-      
-      // Use absolutely positioned (anchored) image to prevent cropping
-      // Position in center of the right column (40% of page width)
-      // For table cells, we'll position relative to column
-      // Right column width: 40% of page = 3,108,960 EMU
-      // Center QR code in the column: (column width - QR width) / 2
-      const pageWidth = 8.5 * 914400; // 7,772,400 EMU
-      const rightColWidth = pageWidth * 0.4; // 3,108,960 EMU
-      const qrPosX = (rightColWidth - qrWidth) / 2; // Center in right column
-      
-      // Move QR code up by using negative Y position (in EMU)
-      // Negative value moves it up relative to the paragraph
-      // -300000 EMU ≈ -0.33 inches (moves it up more)
-      const qrPosY = -450000; // Negative value to move up more
-      
-      // Create absolutely positioned QR code image (in front of text, relative to column)
-      const qrCodeImageXML = createAnchoredImageXMLForCell(qrCodeRelId, qrWidth, qrHeight, qrCodeDocPrId, qrCodePicId, qrPosX, qrPosY);
-      
-      // Place QR code in a paragraph - the anchored image will float above
-      bodyXML += `<w:p>
-        <w:pPr>
-          <w:spacing w:before="0" w:after="0" w:line="200" w:lineRule="auto"/>
-        </w:pPr>
-        <w:r>
-          ${qrCodeImageXML}
-        </w:r>
-      </w:p>`;
-    } else {
-      // Empty cell if no QR code
-      bodyXML += `<w:p><w:pPr><w:spacing w:after="0"/></w:pPr></w:p>`;
-    }
-    
-    bodyXML += `</w:tc>
-      </w:tr>
-    </w:tbl>`;
   } else if (qrCodeRelId && qrCodeDocPrId && qrCodePicId) {
     // If no signatory info but QR code exists, add QR code alone
     bodyXML += createParagraph('', false, 'left', 40);
@@ -2921,8 +2874,51 @@ const generateQuotationDocument = async (quotationData, offerId = null, selected
     let qrCodeData = null;
     
     // Extract approverId as string - handle both ObjectId and populated objects
+    // Priority: Use RFQ approver from timeline if RFQ exists and is approved/quotation_created
     let approverIdString = null;
-    if (header.approverId) {
+    let approvalTimestamp = null;
+    
+    // Check if quotation has an RFQ and if it's been approved
+    if (rfq && (rfq.status === 'quotation_created' || rfq.status === 'approved')) {
+      // Find the approval entry in the timeline
+      const approvalEntry = rfq.timeline && Array.isArray(rfq.timeline) 
+        ? rfq.timeline.find(entry => entry.action === 'approved')
+        : null;
+      
+      if (approvalEntry && approvalEntry.user) {
+        // Use the approver from the RFQ timeline
+        const approverUser = approvalEntry.user;
+        if (typeof approverUser === 'string') {
+          approverIdString = approverUser;
+        } else if (approverUser._id) {
+          approverIdString = String(approverUser._id);
+        } else if (approverUser.toString && typeof approverUser.toString === 'function') {
+          approverIdString = approverUser.toString();
+        } else {
+          approverIdString = String(approverUser);
+        }
+        
+        // Get approval timestamp from timeline
+        if (approvalEntry.timestamp) {
+          approvalTimestamp = Math.floor(new Date(approvalEntry.timestamp).getTime() / 1000);
+        }
+      } else if (rfq.approverId) {
+        // Fallback to RFQ approverId if timeline entry not found
+        const rfqApprover = rfq.approverId;
+        if (typeof rfqApprover === 'string') {
+          approverIdString = rfqApprover;
+        } else if (rfqApprover._id) {
+          approverIdString = String(rfqApprover._id);
+        } else if (rfqApprover.toString && typeof rfqApprover.toString === 'function') {
+          approverIdString = rfqApprover.toString();
+        } else {
+          approverIdString = String(rfqApprover);
+        }
+      }
+    }
+    
+    // Fallback to header approverId if RFQ approver not found
+    if (!approverIdString && header.approverId) {
       if (typeof header.approverId === 'string') {
         approverIdString = header.approverId;
       } else if (header.approverId._id) {
@@ -2947,7 +2943,7 @@ const generateQuotationDocument = async (quotationData, offerId = null, selected
         qrCodeData = {
           quotationNumber: header.quotationNumber,
           approverId: approverIdString,
-          timestamp: Math.floor(Date.now() / 1000)
+          timestamp: approvalTimestamp || Math.floor(Date.now() / 1000)
         };
       } catch (qrError) {
         console.error('Error preparing QR code:', qrError);

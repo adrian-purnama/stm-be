@@ -377,6 +377,7 @@ const getQuotationOffers = async (quotationNumber) => {
         { path: 'requesterId', select: 'fullName email' },
         { path: 'approverId', select: 'fullName email' },
         { path: 'quotationCreatorId', select: 'fullName email' },
+        { path: 'timeline.user', select: 'fullName email' },
         { path: 'documents', populate: { path: 'uploadedBy', select: 'fullName email' } },
         { path: 'items', populate: [{ path: 'drawingSpecification' }, { path: 'templateSourceId' }] }
       ]
