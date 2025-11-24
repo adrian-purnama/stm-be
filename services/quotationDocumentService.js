@@ -1285,7 +1285,7 @@ const prepareQuotationData = async (header, offer, selectedNotes = [], drawingsI
     introduction_text: "Bersama ini kami PT. SUKSES TUNGGAL MANDIRI bermaksud untuk mengajukan penawaran harga pembuatan Karoseri dengan data sebagai berikut :",
     
     // Signature section
-    signature: "Demikianlah penawaran dari kami, atas perhatian dan kerjasamanya kami ucapkan terimakasih.\nHormat Kami,\n\nPT. Sukses Tunggal Mandiri",
+    signature: "Demikianlah penawaran dari kami, atas perhatian dan kerjasamanya kami ucapkan terimakasih.\n\nHormat Kami,\nPT. Sukses Tunggal Mandiri",
     
     // Signatory information (for signature section)
     name: signatoryName, // Signatory name (uses full name from user)
@@ -1363,7 +1363,45 @@ const generateDocumentXMLFromScratch = async (templateData, tableMap = {}, heade
     </w:p>`;
   };
   
-  // Helper to create paragraph with "Chassis :" in bold and rest normal
+  // Helper to create paragraph with "PT. SUKSES TUNGGAL MANDIRI" in bold
+  const createIntroductionParagraph = (text, alignment = 'left', spacingAfter = 50) => {
+    const alignTag = alignment === 'center' ? '<w:jc w:val="center"/>' : 
+                     alignment === 'right' ? '<w:jc w:val="right"/>' : '';
+    
+    // Match "PT. SUKSES TUNGGAL MANDIRI" in the text
+    const introMatch = text.match(/^(.*?)(PT\. SUKSES TUNGGAL MANDIRI)(.*)$/);
+    
+    if (introMatch) {
+      const [, before, companyName, after] = introMatch;
+      const escapedBefore = escapeXml(before);
+      const escapedCompany = escapeXml(companyName);
+      const escapedAfter = escapeXml(after);
+      
+      return `<w:p>
+        <w:pPr>
+          ${alignTag}
+          <w:spacing w:after="${spacingAfter}" w:line="200" w:lineRule="auto"/>
+        </w:pPr>
+        <w:r>
+          <w:rPr>${FONT_TAG_WITH_SIZE}</w:rPr>
+          <w:t xml:space="preserve">${escapedBefore}</w:t>
+        </w:r>
+        <w:r>
+          <w:rPr>${FONT_TAG_WITH_SIZE}<w:b/></w:rPr>
+          <w:t xml:space="preserve">${escapedCompany}</w:t>
+        </w:r>
+        <w:r>
+          <w:rPr>${FONT_TAG_WITH_SIZE}</w:rPr>
+          <w:t xml:space="preserve">${escapedAfter}</w:t>
+        </w:r>
+      </w:p>`;
+    }
+    
+    // Fallback to regular paragraph if pattern doesn't match
+    return createParagraph(text, false, alignment, spacingAfter);
+  };
+  
+  // Helper to create paragraph with "Chassis :" and chassis value in bold
   const createChassisParagraph = (text, alignment = 'left', spacingAfter = 30) => {
     const alignTag = alignment === 'center' ? '<w:jc w:val="center"/>' : 
                      alignment === 'right' ? '<w:jc w:val="right"/>' : '';
@@ -1391,7 +1429,7 @@ const generateDocumentXMLFromScratch = async (templateData, tableMap = {}, heade
           <w:t xml:space="preserve">${escapedChassis}</w:t>
         </w:r>
         <w:r>
-          <w:rPr>${FONT_TAG_WITH_SIZE}</w:rPr>
+          <w:rPr>${FONT_TAG_WITH_SIZE}<w:b/></w:rPr>
           <w:t xml:space="preserve">${escapedRest}</w:t>
         </w:r>
       </w:p>`;
@@ -1649,7 +1687,7 @@ const generateDocumentXMLFromScratch = async (templateData, tableMap = {}, heade
   bodyXML += createParagraph('Dengan Hormat,', false, 'left', 40);
   bodyXML += createParagraph('', false, 'left', 40); // Add blank line after Dengan Hormat
   if (templateData.introduction_text) {
-    bodyXML += createParagraph(templateData.introduction_text, false, 'left', 50);
+    bodyXML += createIntroductionParagraph(templateData.introduction_text, 'left', 50);
     bodyXML += createParagraph('', false, 'left', 40); // Add blank line after introduction text
   }
   
@@ -1730,9 +1768,10 @@ const generateDocumentXMLFromScratch = async (templateData, tableMap = {}, heade
     sigLines.forEach((line, idx) => {
       if (line.trim()) {
         const isLast = idx === sigLines.length - 1;
-        // Add extra spacing after "Hormat Kami," line
-        const spacingAfter = (line.trim() === 'Hormat Kami,' || line.trim() === 'Hormat Kami, ') ? 60 : (isLast ? 40 : 30);
-        bodyXML += createParagraph(line, isLast, 'left', spacingAfter);
+        // Add extra spacing after "Hormat Kami," line and make it bold
+        const isHormatKami = line.trim() === 'Hormat Kami,' || line.trim() === 'Hormat Kami, ';
+        const spacingAfter = isHormatKami ? 60 : (isLast ? 40 : 30);
+        bodyXML += createParagraph(line, isHormatKami, 'left', spacingAfter);
       } else {
         // Add empty paragraph for blank lines (to preserve spacing)
         bodyXML += createParagraph('', false, 'left', 30);
