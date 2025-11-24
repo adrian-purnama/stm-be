@@ -2394,7 +2394,12 @@ const createDOCXFromScratch = async (templateData, tableMap = {}, imageData = []
   const PizZip = require('pizzip');
   const zip = new PizZip();
   
-  let relationshipIdCounter = 2; // Start from 2 (rId1 is for styles)
+  // Relationship IDs in document.xml.rels:
+  // rId1 = styles.xml
+  // rId2 = header1.xml (fixed)
+  // rId3 = footer1.xml (fixed)
+  // rId4+ = drawing images, notes images, QR code
+  let relationshipIdCounter = 4; // Start from 4 (rId1=styles, rId2=header, rId3=footer)
   let docPrIdCounter = 1; // Document property IDs start from 1
   let picIdCounter = 1; // Picture IDs start from 1
   const imageRelationships = [];
@@ -2413,15 +2418,24 @@ const createDOCXFromScratch = async (templateData, tableMap = {}, imageData = []
           
           // Validate base64
           if (!base64Data || base64Data.trim().length === 0) {
-            console.error('Empty base64 data for drawing image');
+            console.error(`[Drawing Image ${idx + 1}] Empty base64 data for drawing image`);
             return img;
           }
+          
+          // Remove any whitespace from base64 string
+          base64Data = base64Data.trim();
           
           const imageBuffer = Buffer.from(base64Data, 'base64');
           
           // Validate buffer was created successfully
           if (!imageBuffer || imageBuffer.length === 0) {
-            console.error('Failed to create buffer from base64 data');
+            console.error(`[Drawing Image ${idx + 1}] Failed to create buffer from base64 data (buffer length: ${imageBuffer?.length || 0})`);
+            return img;
+          }
+          
+          // Validate buffer is a reasonable size (at least 100 bytes for a valid image)
+          if (imageBuffer.length < 100) {
+            console.error(`[Drawing Image ${idx + 1}] Image buffer too small (${imageBuffer.length} bytes), likely invalid`);
             return img;
           }
           
@@ -2430,6 +2444,8 @@ const createDOCXFromScratch = async (templateData, tableMap = {}, imageData = []
           
           zip.file(imagePath, imageBuffer);
           imageRelationships.push(`<Relationship Id="${relationshipId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image${relationshipIdCounter}.jpg"/>`);
+          
+          console.log(`[Drawing Image ${idx + 1}] Successfully processed: ${relationshipId}, size: ${imageBuffer.length} bytes, path: ${imagePath}`);
           
           // Drawing images: 5.5 x 7.5 inches (fits within A4 page with margins)
           // 1 inch = 914400 EMU, so 5.5 inches = 5,029,200 EMU, 7.5 inches = 6,858,000 EMU
@@ -2442,7 +2458,7 @@ const createDOCXFromScratch = async (templateData, tableMap = {}, imageData = []
           picIdCounter++;
           return { ...img, imageTag: imageXML };
         } catch (err) {
-          console.error('Error processing drawing image:', err.message);
+          console.error(`[Drawing Image ${idx + 1}] Error processing drawing image:`, err.message, err.stack);
           return img;
         }
       }
