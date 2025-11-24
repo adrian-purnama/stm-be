@@ -2235,7 +2235,7 @@ const createHeaderXML = (logoNameRelId, isoRelId, logoNameDocPrId, isoDocPrId, l
   const logoNameImageXML = logoNameRelId ? createImageXML(logoNameRelId, logoNameWidth, logoNameHeight, logoNameDocPrId, logoNamePicId) : '';
   const isoImageXML = isoRelId ? createImageXML(isoRelId, isoWidth, isoHeight, isoDocPrId, isoPicId) : '';
   
-  const sloganText = escapeXml('ToBeLeadingTransport&Heavy-DutyManufactureInIndonesia');
+  const sloganText = escapeXml('To Be Leading Transport & Heavy-Duty Manufacture In Indonesia');
   const isoCertText = escapeXml('ISO9001-14001-45001');
   
   // Table column widths: left column for logo (stretched), right column for ISO
@@ -2334,8 +2334,8 @@ const createHeaderXML = (logoNameRelId, isoRelId, logoNameDocPrId, isoDocPrId, l
           <w:r>
             <w:rPr>
               <w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:cs="Arial" w:eastAsia="Arial"/>
-              <w:sz w:val="24"/>
-              <w:szCs w:val="24"/>
+              <w:sz w:val="23"/>
+              <w:szCs w:val="23"/>
               <w:b/>
               <w:i/>
             </w:rPr>
