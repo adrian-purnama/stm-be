@@ -911,16 +911,18 @@ const buildItemText = (offerItems, lineOfBusinessType = 'karoseri', drawingNumbe
     const itemNumberStr = String(itemNumber);
     const paddingBeforeKaroseri = 10 + itemNumberStr.length + 3; // 10 spaces + item number length + ".  "
     
-    itemText += `          ${itemNumber}.  Karoseri : ${karoseri}\n`;
+    itemText += `          ${itemNumber}.  Karoseri     : ${karoseri}\n`;
     // Chassis aligned with Karoseri (same starting position)
+    // Add space before colon: "Chassis      :" (with 6 spaces before colon)
     const chassisPadding = ' '.repeat(paddingBeforeKaroseri);
-    itemText += `${chassisPadding} Chassis : ${chassis}${chassisModel}\n`;
+    itemText += `${chassisPadding} Chassis      : ${chassis}${chassisModel}\n`;
     
     // Karoseri specifications - generate table format
     if (item.specifications && item.specifications.length > 0) {
       // Add specification label aligned with chassis
+      // Add space before colon: "Spesifikasi  :" (with two spaces before colon, matching Chassis format)
       const spesifikasiPadding = ' '.repeat(paddingBeforeKaroseri);
-      itemText += `\n${spesifikasiPadding}Spesifikasi:\n`;
+      itemText += `\n${spesifikasiPadding}Spesifikasi  :\n`;
       
       // Prepare drawing info for table
       let drawingInfo = null;
@@ -1283,7 +1285,7 @@ const prepareQuotationData = async (header, offer, selectedNotes = [], drawingsI
     introduction_text: "Bersama ini kami PT. SUKSES TUNGGAL MANDIRI bermaksud untuk mengajukan penawaran harga pembuatan Karoseri dengan data sebagai berikut :",
     
     // Signature section
-    signature: "Demikianlah penawaran dari kami, atas perhatian dan kerjasamanya kami ucapkan terimakasih.\n\nHormat Kami,\n\nPT. Sukses Tunggal Mandiri",
+    signature: "Demikianlah penawaran dari kami, atas perhatian dan kerjasamanya kami ucapkan terimakasih.\nHormat Kami,\n\nPT. Sukses Tunggal Mandiri",
     
     // Signatory information (for signature section)
     name: signatoryName, // Signatory name (uses full name from user)
@@ -1359,6 +1361,44 @@ const generateDocumentXMLFromScratch = async (templateData, tableMap = {}, heade
         <w:t xml:space="preserve">${escapedText}</w:t>
       </w:r>
     </w:p>`;
+  };
+  
+  // Helper to create paragraph with "Chassis :" in bold and rest normal
+  const createChassisParagraph = (text, alignment = 'left', spacingAfter = 30) => {
+    const alignTag = alignment === 'center' ? '<w:jc w:val="center"/>' : 
+                     alignment === 'right' ? '<w:jc w:val="right"/>' : '';
+    
+    // Match "Chassis :" (with optional leading spaces and text after)
+    const chassisMatch = text.match(/^(\s*)(Chassis\s+:\s*)(.*)$/);
+    
+    if (chassisMatch) {
+      const [, leadingSpaces, chassisPart, rest] = chassisMatch;
+      const escapedLeading = escapeXml(leadingSpaces);
+      const escapedChassis = escapeXml(chassisPart);
+      const escapedRest = escapeXml(rest);
+      
+      return `<w:p>
+        <w:pPr>
+          ${alignTag}
+          <w:spacing w:after="${spacingAfter}" w:line="200" w:lineRule="auto"/>
+        </w:pPr>
+        <w:r>
+          <w:rPr>${FONT_TAG_WITH_SIZE}</w:rPr>
+          <w:t xml:space="preserve">${escapedLeading}</w:t>
+        </w:r>
+        <w:r>
+          <w:rPr>${FONT_TAG_WITH_SIZE}<w:b/></w:rPr>
+          <w:t xml:space="preserve">${escapedChassis}</w:t>
+        </w:r>
+        <w:r>
+          <w:rPr>${FONT_TAG_WITH_SIZE}</w:rPr>
+          <w:t xml:space="preserve">${escapedRest}</w:t>
+        </w:r>
+      </w:p>`;
+    }
+    
+    // Fallback to regular paragraph if pattern doesn't match
+    return createParagraph(text, false, alignment, spacingAfter);
   };
   
   // Helper to create a bordered box for customer greeting (compact, grouped format)
@@ -1633,11 +1673,15 @@ const generateDocumentXMLFromScratch = async (templateData, tableMap = {}, heade
       
       // Regular text line - preserve leading spaces
       if (trimmedLine) {
-        if (trimmedLine.startsWith('Spesifikasi:')) {
+        if (trimmedLine.startsWith('Spesifikasi  :') || trimmedLine.startsWith('Spesifikasi :') || trimmedLine.startsWith('Spesifikasi:')) {
+          // Support multiple formats for backward compatibility (two spaces, one space, or no space)
           bodyXML += createParagraph(originalLine, true, 'left', 30);
         } else if (trimmedLine.match(/^\d+\./)) {
           // Item number line - bold, preserve original spacing
           bodyXML += createParagraph(originalLine, true, 'left', 30);
+        } else if (trimmedLine.includes('Chassis')) {
+          // Chassis line - make "Chassis :" bold, rest normal
+          bodyXML += createChassisParagraph(originalLine, 'left', 30);
         } else {
           // All other lines - preserve original spacing (including leading spaces)
           bodyXML += createParagraph(originalLine, false, 'left', 30);
@@ -1686,7 +1730,12 @@ const generateDocumentXMLFromScratch = async (templateData, tableMap = {}, heade
     sigLines.forEach((line, idx) => {
       if (line.trim()) {
         const isLast = idx === sigLines.length - 1;
-        bodyXML += createParagraph(line, isLast, 'left', isLast ? 40 : 30);
+        // Add extra spacing after "Hormat Kami," line
+        const spacingAfter = (line.trim() === 'Hormat Kami,' || line.trim() === 'Hormat Kami, ') ? 60 : (isLast ? 40 : 30);
+        bodyXML += createParagraph(line, isLast, 'left', spacingAfter);
+      } else {
+        // Add empty paragraph for blank lines (to preserve spacing)
+        bodyXML += createParagraph('', false, 'left', 30);
       }
     });
   }
