@@ -580,12 +580,12 @@ router.post('/reset-password', authenticateToken, authorizeAll(), async (req, re
  */
 router.get('/users', authenticateToken, authorize(['user_view']), async (req, res) => {
   try {
-    const { page = 1, limit = 10 } = req.query;
+    const { page = 1, limit = 10, search = '' } = req.query;
 
-    console.log('Fetching users - Page:', page, 'Limit:', limit);
+    console.log('Fetching users - Page:', page, 'Limit:', limit, 'Search:', search);
     console.log('Current user:', req.user);
 
-    const result = await userHelper.getAllUsers(page, limit);
+    const result = await userHelper.getAllUsers(page, limit, search);
 
     console.log('Found users:', result.users.length);
     console.log('Users:', result.users.map(u => ({ id: u._id, email: u.email, fullName: u.fullName })));

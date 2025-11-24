@@ -184,18 +184,28 @@ const deleteUser = async (userId) => {
 };
 
 // Get all users
-const getAllUsers = async (page = 1, limit = 10) => {
-  console.log('getAllUsers called with page:', page, 'limit:', limit);
+const getAllUsers = async (page = 1, limit = 10, search = '') => {
+  console.log('getAllUsers called with page:', page, 'limit:', limit, 'search:', search);
   
-  const users = await User.find()
+  // Build search query - search across all users (not just current page)
+  const query = {};
+  if (search && search.trim()) {
+    const searchRegex = new RegExp(search.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+    query.$or = [
+      { fullName: searchRegex },
+      { email: searchRegex }
+    ];
+  }
+  
+  const users = await User.find(query)
     .populate('permissions')
     .sort({ createdAt: -1 })
     .limit(limit * 1)
     .skip((page - 1) * limit);
 
-  const total = await User.countDocuments();
+  const total = await User.countDocuments(query);
   
-  console.log('Total users in database:', total);
+  console.log('Total users in database (matching search):', total);
   console.log('Users found:', users.length);
 
   // Remove passwords from all users and format roles
