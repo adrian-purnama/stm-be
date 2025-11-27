@@ -6,7 +6,7 @@ const catalogueHelper = require('../utils/catalogueHelper');
 const { sendSuccessResponse, sendErrorResponse, ERROR_MESSAGES, SUCCESS_MESSAGES } = require('../utils/errorHandler');
 
 // GET /api/catalogues - List catalogues with pagination
-router.get('/', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
+router.get('/', async (req, res) => {
   try {
     const { page = 1, limit = 10, search, bodyType } = req.query;
 
@@ -52,7 +52,7 @@ router.get('/body-type/:bodyTypeId', authenticateToken, authorize(['placeholder_
 });
 
 // GET /api/catalogues/:id - Get catalogue by ID
-router.get('/:id', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
+router.get('/:id', async (req, res) => {
   try {
     const catalogue = await catalogueHelper.getCatalogueById(req.params.id);
     return sendSuccessResponse(res, 200, SUCCESS_MESSAGES.RETRIEVED, catalogue);
@@ -67,7 +67,7 @@ router.get('/:id', authenticateToken, authorize(['placeholder_test']), async (re
 // POST /api/catalogues - Create catalogue
 router.post('/', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
   try {
-    const { bodyType, article, variantCategories, sizes, chassis, leadTime, notes } = req.body;
+    const { bodyType, article, variantCategories, sizes, chassis, frontImage, carouselImages, featured, leadTime, notes } = req.body;
 
     // Validate required fields
     if (!bodyType) {
@@ -76,6 +76,16 @@ router.post('/', authenticateToken, authorize(['placeholder_test']), async (req,
 
     if (!mongoose.Types.ObjectId.isValid(bodyType)) {
       return sendErrorResponse(res, 400, 'Invalid body type ID');
+    }
+
+    // Validate front image
+    if (!frontImage || !frontImage.trim()) {
+      return sendErrorResponse(res, 400, 'Front image is required');
+    }
+
+    // Validate carousel images
+    if (carouselImages !== undefined && !Array.isArray(carouselImages)) {
+      return sendErrorResponse(res, 400, 'Carousel images must be an array');
     }
 
     // Validate variant categories structure
@@ -117,6 +127,9 @@ router.post('/', authenticateToken, authorize(['placeholder_test']), async (req,
       variantCategories: variantCategories || [],
       sizes: sizes || [],
       chassis: chassis || [],
+      frontImage: frontImage.trim(),
+      carouselImages: Array.isArray(carouselImages) ? carouselImages.filter(img => img && img.trim()) : [],
+      featured: featured === true,
       leadTime: leadTime || '',
       notes: notes || '',
       createdBy: req.user.userId
@@ -134,11 +147,18 @@ router.post('/', authenticateToken, authorize(['placeholder_test']), async (req,
 // PUT /api/catalogues/:id - Update catalogue
 router.put('/:id', authenticateToken, authorize(['placeholder_test']), async (req, res) => {
   try {
-    const { article, variantCategories, sizes, chassis, shopCatalogueOverrides, leadTime, notes } = req.body;
+    const { article, variantCategories, sizes, chassis, frontImage, carouselImages, featured, shopCatalogueOverrides, leadTime, notes } = req.body;
 
     // Validate at least one field is provided
-    if (!article && !variantCategories && !sizes && !chassis && shopCatalogueOverrides === undefined && leadTime === undefined && notes === undefined) {
+    if (!article && !variantCategories && !sizes && !chassis && frontImage === undefined && carouselImages === undefined && featured === undefined && shopCatalogueOverrides === undefined && leadTime === undefined && notes === undefined) {
       return sendErrorResponse(res, 400, 'At least one field must be provided for update');
+    }
+
+    // Validate carousel images if provided
+    if (carouselImages !== undefined) {
+      if (!Array.isArray(carouselImages)) {
+        return sendErrorResponse(res, 400, 'Carousel images must be an array');
+      }
     }
 
     // Validate variant categories structure if provided
@@ -188,6 +208,9 @@ router.put('/:id', authenticateToken, authorize(['placeholder_test']), async (re
       variantCategories,
       sizes,
       chassis,
+      frontImage: frontImage !== undefined ? frontImage.trim() : undefined,
+      carouselImages: carouselImages !== undefined ? carouselImages.filter(img => img && img.trim()) : undefined,
+      featured: featured !== undefined ? featured === true : undefined,
       shopCatalogueOverrides,
       leadTime,
       notes

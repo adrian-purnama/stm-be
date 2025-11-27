@@ -359,7 +359,7 @@ const buildChassisDefinition = async (chassisDef) => {
 };
 
 
-const createCatalogue = async ({ bodyType, article, variantCategories, sizes, chassis, leadTime, notes, createdBy }) => {
+const createCatalogue = async ({ bodyType, article, variantCategories, sizes, chassis, frontImage, carouselImages, featured, leadTime, notes, createdBy }) => {
   const validatedBodyType = await validateBodyTypeReference(bodyType);
 
   // Check if catalogue already exists for this body type
@@ -376,6 +376,9 @@ const createCatalogue = async ({ bodyType, article, variantCategories, sizes, ch
     variantCategories: buildVariantCategories(variantCategories),
     sizes: [],
     chassis: [],
+    frontImage: frontImage ? frontImage.trim() : '',
+    carouselImages: Array.isArray(carouselImages) ? carouselImages.filter(img => img && img.trim()).map(img => img.trim()) : [],
+    featured: featured === true,
     leadTime: leadTime ? leadTime.trim() : '',
     notes: notes ? notes.trim() : '',
     createdBy
@@ -533,6 +536,21 @@ const updateCatalogue = async (id, updates, userId) => {
       }
     }
 
+    if (updates.frontImage !== undefined) {
+      catalogue.frontImage = updates.frontImage ? updates.frontImage.trim() : '';
+    }
+
+    if (updates.carouselImages !== undefined) {
+      if (Array.isArray(updates.carouselImages)) {
+        catalogue.carouselImages = updates.carouselImages.filter(img => img && img.trim()).map(img => img.trim());
+      } else {
+        catalogue.carouselImages = [];
+      }
+    }
+
+    if (updates.featured !== undefined) {
+      catalogue.featured = updates.featured === true;
+    }
 
     if (updates.leadTime !== undefined) {
       catalogue.leadTime = updates.leadTime ? updates.leadTime.trim() : '';

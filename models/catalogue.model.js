@@ -66,6 +66,19 @@ const catalogueSchema = new mongoose.Schema({
     type: [chassisDefinitionSchema],
     default: []
   },
+  frontImage: {
+    type: String,
+    required: true,
+    trim: true
+  },
+  carouselImages: {
+    type: [String],
+    default: []
+  },
+  featured: {
+    type: Boolean,
+    default: false
+  },
   shopCatalogueOverrides: [{
     combinationId: {
       type: String,
