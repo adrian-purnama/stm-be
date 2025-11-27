@@ -14,7 +14,10 @@ const PORT = process.env.PORT || 5000;
 app.use(cors({
   origin: [
     process.env.FRONTEND_URL,
-    /^https?:\/\/.*\.stm-asb\.co\.id$/
+    /^https?:\/\/.*\.stm-asb\.co\.id$/,
+    "http://localhost:3001",
+    "https://catalogue.stm-asb.co.id",
+    "https://uat-catalogue.stm-asb.co.id"
   ],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization'],
@@ -144,6 +147,7 @@ app.use('/api/permission-categories', require("./routes/permissionCategories"));
 app.use('/api/notifications', require('./routes/notifications'));
 app.use('/api/rfq', require('./routes/rfqDocuments'));
 app.use('/api/rfq', require('./routes/rfq'));
+app.use('/api/companies', require('./routes/companies'));
 
 app.get('/api/health', (req, res) => {
   res.json({

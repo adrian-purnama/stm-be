@@ -153,9 +153,80 @@ const sendEmail = async (mailOptions) => {
   }
 };
 
+// Get Brevo account quota information
+const getBrevoQuota = async () => {
+  try {
+    if (!process.env.BREVO_API_KEY) {
+      return {
+        success: false,
+        error: 'Brevo API key not configured'
+      };
+    }
+
+    const accountApi = new SibApiV3Sdk.AccountApi();
+    
+    // Get account information which includes plan details
+    const accountInfo = await accountApi.getAccount();
+    
+    // Extract email plan from the plans array
+    // Brevo API returns plan as an array with different plan types (email, sms, etc.)
+    const emailPlan = Array.isArray(accountInfo.plan) 
+      ? accountInfo.plan.find(p => p.type === 'free' || p.creditsType === 'sendLimit')
+      : null;
+    
+    // Get remaining credits from the email plan
+    const remainingCredits = emailPlan?.credits || null;
+    
+    // Determine total credits based on plan type
+    // Free plan typically has 300 emails per day
+    // For other plans, we might need to check plan details
+    let totalCredits = null;
+    if (emailPlan) {
+      if (emailPlan.type === 'free') {
+        totalCredits = 300; // Free plan limit is 300 emails per day
+      } else {
+        // For paid plans, the total might be different
+        // You might want to set this based on plan type or leave as null
+        totalCredits = null;
+      }
+    }
+    
+    // Calculate used credits
+    const usedCredits = (totalCredits !== null && remainingCredits !== null) 
+      ? totalCredits - remainingCredits 
+      : null;
+    
+    const quotaInfo = {
+      plan: emailPlan?.type || 'Unknown',
+      planType: emailPlan?.creditsType || 'Unknown',
+      email: accountInfo.email || 'N/A',
+      firstName: accountInfo.firstName || '',
+      lastName: accountInfo.lastName || '',
+      credits: {
+        remaining: remainingCredits,
+        total: totalCredits,
+        used: usedCredits
+      }
+    };
+
+    return {
+      success: true,
+      data: quotaInfo
+    };
+  } catch (error) {
+    console.error('[EmailConfig] Error getting Brevo quota:', error);
+    const errorMessage = error.response?.body?.message || error.message || 'Failed to get quota information';
+    return {
+      success: false,
+      error: errorMessage
+    };
+  }
+};
+
 module.exports = {
   testEmailConfig,
-  sendEmail
+  sendEmail,
+  getBrevoQuota
 };
 
 

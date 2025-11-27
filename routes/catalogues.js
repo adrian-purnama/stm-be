@@ -4,6 +4,12 @@ const router = express.Router();
 const { authenticateToken, authorize } = require('../middleware/auth');
 const catalogueHelper = require('../utils/catalogueHelper');
 const { sendSuccessResponse, sendErrorResponse, ERROR_MESSAGES, SUCCESS_MESSAGES } = require('../utils/errorHandler');
+const { sendEmail } = require('../utils/emailConfig');
+const Company = require('../models/company.model');
+const Catalogue = require('../models/catalogue.model');
+
+const BRAND_COLOR = '#b91c1c';
+const COMPANY_NAME = 'ASB';
 
 // GET /api/catalogues - List catalogues with pagination
 router.get('/', async (req, res) => {
@@ -338,6 +344,290 @@ router.put('/:id/shop-overrides', authenticateToken, authorize(['placeholder_tes
     const message = status === 500 ? ERROR_MESSAGES.INTERNAL_ERROR : err.message;
     console.error('Error updating shop overrides:', err);
     return sendErrorResponse(res, status, message);
+  }
+});
+
+// POST /api/catalogues/price-inquiry - Submit price inquiry (supports single or bundle)
+router.post('/price-inquiry', async (req, res) => {
+  try {
+    const {
+      items, // Array of items for bundle inquiry
+      catalogueId, // Legacy: single item inquiry
+      variantCombinationId, // Legacy: single item inquiry
+      inquiryType, // 'personal' or 'company'
+      name,
+      companyName,
+      gender,
+      email,
+      phone,
+      message
+    } = req.body;
+
+    // Validation
+    if (!inquiryType || !['personal', 'company'].includes(inquiryType)) {
+      return sendErrorResponse(res, 400, 'Inquiry type must be "personal" or "company"');
+    }
+    if (!name || !name.trim()) {
+      return sendErrorResponse(res, 400, 'Name is required');
+    }
+    if (inquiryType === 'company' && (!companyName || !companyName.trim())) {
+      return sendErrorResponse(res, 400, 'Company name is required for company inquiries');
+    }
+    if (!email || !email.trim()) {
+      return sendErrorResponse(res, 400, 'Email is required');
+    }
+    if (!phone || !phone.trim()) {
+      return sendErrorResponse(res, 400, 'Phone is required');
+    }
+
+    // Handle bundle inquiry (multiple items) or single item inquiry
+    const inquiryItems = items && Array.isArray(items) && items.length > 0
+      ? items
+      : [{ catalogueId, variantCombinationId: variantCombinationId || null, quantity: 1 }];
+
+    if (inquiryItems.length === 0 || !inquiryItems[0].catalogueId) {
+      return sendErrorResponse(res, 400, 'At least one catalogue item is required');
+    }
+
+    // Fetch all catalogues and build items list
+    const itemsList = [];
+    for (const item of inquiryItems) {
+      try {
+        // Use getCatalogueById which already enriches the catalogue with shopCatalogue
+        const enrichedCatalogue = await catalogueHelper.getCatalogueById(item.catalogueId);
+        
+        if (!enrichedCatalogue) {
+          console.warn(`Catalogue with ID ${item.catalogueId} not found for inquiry.`);
+          continue; // Skip invalid items
+        }
+
+        let variantDetails = null;
+        if (item.variantCombinationId && enrichedCatalogue.shopCatalogue) {
+          variantDetails = enrichedCatalogue.shopCatalogue.find(
+            v => String(v.combinationId) === String(item.variantCombinationId)
+          );
+        }
+
+        itemsList.push({
+          catalogue: enrichedCatalogue,
+          variant: variantDetails,
+          quantity: item.quantity || 1
+        });
+      } catch (err) {
+        console.warn(`Error fetching catalogue ${item.catalogueId} for inquiry:`, err.message);
+        continue; // Skip invalid items
+      }
+    }
+
+    if (itemsList.length === 0) {
+      return sendErrorResponse(res, 400, 'No valid catalogue items found');
+    }
+
+    // Get company email configuration
+    const company = await Company.findOne();
+    if (!company || !company.email || 
+        (!company.email.sendTo || company.email.sendTo.length === 0)) {
+      return sendErrorResponse(res, 500, 'Company email configuration not found');
+    }
+
+    // Helper to format size label
+    const getSizeLabel = (size) => {
+      if (!size) return 'Not specified';
+      const sizeTypeLabel = size.sizeType?.name || '';
+      const sizeCustom = size.sizeCustom || '';
+      return sizeTypeLabel + (sizeCustom ? ` - ${sizeCustom}` : '') || sizeCustom || 'Not specified';
+    };
+
+    // Helper to format chassis label
+    const getChassisLabel = (ch) => {
+      if (!ch) return 'Not specified';
+      const chassisTypeLabel = ch.chassisType?.name || ch.chassisType?.shortName || '';
+      const chassisDetails = ch.chassisDetails && ch.chassisDetails.length > 0 
+        ? ` (${ch.chassisDetails.join(', ')})` 
+        : '';
+      return chassisTypeLabel + chassisDetails || 'Not specified';
+    };
+
+    // Build email content for all items
+    const isBundle = itemsList.length > 1;
+    const itemsHtml = itemsList.map((item, index) => {
+      const productName = item.catalogue.bodyType?.name || 'Product';
+      const bodyTypeShortName = item.catalogue.bodyType?.shortName || '';
+      const variant = item.variant;
+      const quantity = item.quantity || 1;
+
+      let itemDetails = '';
+      itemDetails += `<li style="margin:8px 0;"><strong>Body Type:</strong> ${productName}${bodyTypeShortName ? ` (${bodyTypeShortName})` : ''}</li>`;
+      
+      if (variant) {
+        // Specific variant selected
+        if (variant.sizeData) {
+          itemDetails += `<li style="margin:8px 0;"><strong>Size:</strong> ${getSizeLabel(variant.sizeData)}</li>`;
+        }
+        if (variant.chassisData) {
+          itemDetails += `<li style="margin:8px 0;"><strong>Chassis:</strong> ${getChassisLabel(variant.chassisData)}</li>`;
+        }
+        if (variant.variantSelections && Object.keys(variant.variantSelections).length > 0) {
+          Object.entries(variant.variantSelections).forEach(([key, value]) => {
+            itemDetails += `<li style="margin:8px 0;"><strong>${key}:</strong> ${value}</li>`;
+          });
+        }
+        if (variant.price) {
+          itemDetails += `<li style="margin:8px 0;"><strong>Price Reference:</strong> ${variant.price === 'ask' ? 'Ask for Price' : variant.price}</li>`;
+        }
+      } else {
+        // No specific variant - show available variant categories for this body type
+        const catalogueObj = item.catalogue.toObject ? item.catalogue.toObject() : item.catalogue;
+        const variantCategories = catalogueObj.variantCategories || [];
+        
+        // Always show variant categories if they exist, as these are the options available for this body type
+        if (variantCategories.length > 0) {
+          variantCategories.forEach(cat => {
+            if (cat.category && cat.values && cat.values.length > 0) {
+              itemDetails += `<li style="margin:8px 0;"><strong>${cat.category}:</strong> ${cat.values.join(', ')}</li>`;
+            }
+          });
+          itemDetails += `<li style="margin:8px 0;color:#6b7280;font-style:italic;">Customer will specify exact configuration from these options</li>`;
+        } else {
+          // No variant categories available - show sizes and chassis if available
+          const sizes = catalogueObj.sizes || [];
+          const chassis = catalogueObj.chassis || [];
+          
+          if (sizes.length > 0 || chassis.length > 0) {
+            if (sizes.length > 0) {
+              itemDetails += `<li style="margin:8px 0;"><strong>Available Sizes:</strong> ${sizes.map(s => getSizeLabel(s)).join(', ')}</li>`;
+            }
+            if (chassis.length > 0) {
+              itemDetails += `<li style="margin:8px 0;"><strong>Available Chassis:</strong> ${chassis.map(c => getChassisLabel(c)).join(', ')}</li>`;
+            }
+            itemDetails += `<li style="margin:8px 0;color:#6b7280;font-style:italic;">Customer will specify exact configuration</li>`;
+          } else {
+            itemDetails += `<li style="margin:8px 0;"><em>General product inquiry - no specific variant selected</em></li>`;
+          }
+        }
+      }
+
+      if (quantity > 1) {
+        itemDetails += `<li style="margin:8px 0;"><strong>Quantity:</strong> ${quantity}</li>`;
+      }
+
+      return `
+        <div style="margin-bottom:20px;padding:12px;background:#f8fafc;border-left:3px solid ${BRAND_COLOR};border-radius:4px;">
+          <h4 style="color:${BRAND_COLOR};margin:0 0 10px 0;font-size:14px;font-weight:600;">
+            ${isBundle ? `Item ${index + 1}:` : 'Product Configuration Requested:'}
+          </h4>
+          <ul style="list-style:none;padding:0;margin:0;">
+            ${itemDetails}
+          </ul>
+        </div>
+      `;
+    }).join('');
+
+    const productsSection = `
+      <h3 style="color:${BRAND_COLOR};margin-top:20px;margin-bottom:10px;font-size:16px;">
+        ${isBundle ? `Products Requested (${itemsList.length} items):` : 'Product Configuration Requested:'}
+      </h3>
+      ${itemsHtml}
+    `;
+
+    const customerInfo = `
+      <h3 style="color:${BRAND_COLOR};margin-top:20px;margin-bottom:10px;font-size:16px;">Customer Information:</h3>
+      <ul style="list-style:none;padding:0;">
+        <li style="margin:5px 0;"><strong>Type:</strong> ${inquiryType === 'company' ? 'Company' : 'Personal'}</li>
+        <li style="margin:5px 0;"><strong>Name:</strong> ${name}</li>
+        ${inquiryType === 'company' ? `<li style="margin:5px 0;"><strong>Company Name:</strong> ${companyName}</li>` : ''}
+        ${gender ? `<li style="margin:5px 0;"><strong>Gender:</strong> ${gender}</li>` : ''}
+        <li style="margin:5px 0;"><strong>Email:</strong> <a href="mailto:${email}">${email}</a></li>
+        <li style="margin:5px 0;"><strong>Phone:</strong> ${phone}</li>
+      </ul>
+    `;
+
+    // Customer message section
+    const customerMessage = message && message.trim() 
+      ? `
+        <h3 style="color:${BRAND_COLOR};margin-top:20px;margin-bottom:10px;font-size:16px;">Customer Message:</h3>
+        <div style="margin:10px 0;padding:12px;background:#f8fafc;border-left:3px solid ${BRAND_COLOR};border-radius:4px;">
+          <p style="margin:0;white-space:pre-wrap;color:#1f2937;line-height:1.6;">${message.trim()}</p>
+        </div>
+      `
+      : '';
+
+    const emailBody = `
+      <p style="font-size:16px;margin-bottom:20px;">You have received a new price inquiry${isBundle ? ' (Bundle)' : ''}:</p>
+      
+      ${productsSection}
+      ${customerInfo}
+      ${customerMessage}
+      
+      <div style="margin-top:30px;padding:15px;background:#fff5f5;border-radius:8px;border-left:4px solid ${BRAND_COLOR};">
+        <p style="margin:0;font-size:14px;"><strong>Please respond to this inquiry promptly.</strong></p>
+      </div>
+    `;
+    
+    // Wrap in email template
+    const BASE_BG = '#f8fafc';
+    const BRAND_ACCENT = '#fee2e2';
+    const COMPANY_LOGO_URL = 'https://i.imgur.com/83wJQlA.png';
+    const formattedEmailBody = `
+      <div style="background-color:${BASE_BG};padding:24px;font-family:'Segoe UI',Arial,sans-serif;">
+        <table style="max-width:600px;margin:0 auto;background:#ffffff;border-radius:12px;overflow:hidden;border:1px solid ${BRAND_ACCENT};box-shadow:0 12px 30px rgba(185,28,28,0.12);">
+          <thead>
+            <tr>
+              <td style="background:${BRAND_COLOR};padding:24px;text-align:center;">
+                <img src="${COMPANY_LOGO_URL}" alt="${COMPANY_NAME} Logo" style="height:56px;display:block;margin:0 auto 8px;" />
+                <h1 style="margin:0;font-size:20px;color:#ffffff;font-weight:600;">Price Inquiry</h1>
+              </td>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td style="padding:24px;color:#1f2937;font-size:15px;line-height:1.7;">
+                ${emailBody}
+              </td>
+            </tr>
+          </tbody>
+          <tfoot>
+            <tr>
+              <td style="padding:16px 24px;background:#fff5f5;color:${BRAND_COLOR};font-size:12px;text-align:center;border-top:1px solid ${BRAND_ACCENT};">
+                This is an automated message from ${COMPANY_NAME}. Please do not reply to this email.
+              </td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    `;
+
+    // Prepare recipients
+    const sendToEmails = company.email.sendTo.map(e => e.email);
+    const ccEmails = company.email.cc && company.email.cc.length > 0 
+      ? company.email.cc.map(e => e.email) 
+      : [];
+
+    // Build subject line
+    const firstProductName = itemsList[0].catalogue.bodyType?.name || 'Product';
+    const subject = isBundle
+      ? `Price Inquiry (Bundle - ${itemsList.length} items): ${firstProductName}${itemsList.length > 1 ? ' + more' : ''} - ${inquiryType === 'company' ? companyName : name}`
+      : `Price Inquiry: ${firstProductName} - ${inquiryType === 'company' ? companyName : name}`;
+
+    // Send email
+    const emailResult = await sendEmail({
+      from: `"${COMPANY_NAME} Catalogue System" <${process.env.BREVO_SENDER_EMAIL || 'noreply@asb.com'}>`,
+      to: sendToEmails,
+      cc: ccEmails.length > 0 ? ccEmails : undefined,
+      subject: subject,
+      html: formattedEmailBody,
+      replyTo: email
+    });
+
+    if (!emailResult.success) {
+      console.error('Failed to send price inquiry email:', emailResult.error);
+      return sendErrorResponse(res, 500, 'Failed to send inquiry email', emailResult.error);
+    }
+
+    return sendSuccessResponse(res, 200, 'Price inquiry submitted successfully. We will contact you soon.');
+  } catch (error) {
+    console.error('Error processing price inquiry:', error);
+    return sendErrorResponse(res, 500, ERROR_MESSAGES.INTERNAL_ERROR, error.message);
   }
 });
 
