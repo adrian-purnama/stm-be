@@ -135,7 +135,7 @@ app.use('/api/body-types', require('./routes/bodyTypes'));
 app.use('/api/chassis-types', require('./routes/chassisTypes'));
 app.use('/api/size-types', require('./routes/sizeTypes'));
 app.use('/api/feature-types', require('./routes/featureTypes'));
-app.use('/api/articles', require('./routes/articles'));
+app.use('/api/catalogues', require('./routes/catalogues'));
 app.use('/api/assets', require('./routes/assets'));
 app.use('/api/notes-images', require('./routes/notesImages').router);
 app.use('/api/permissions', require('./routes/permissions'));
