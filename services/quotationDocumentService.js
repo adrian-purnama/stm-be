@@ -1969,7 +1969,8 @@ const generateDocumentXMLFromScratch = async (templateData, tableMap = {}, heade
   // Build section properties with header/footer references
   // Small margins on left and right, slightly increased top margin
   // Header margin adds space between top of page and header content
-  let sectPrContent = `<w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1800" w:right="1008" w:bottom="1440" w:left="1008" w:header="360" w:footer="360" w:gutter="0"/>`;
+  // Footer margin increased to prevent footer image from being cropped at the top
+  let sectPrContent = `<w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1800" w:right="1008" w:bottom="1440" w:left="1008" w:header="360" w:footer="720" w:gutter="0"/>`;
   
   if (headerRelId) {
     sectPrContent += `<w:headerReference w:type="default" r:id="rId${headerRelId}"/>`;
@@ -2469,8 +2470,12 @@ const createHeaderXML = (logoNameRelId, isoRelId, logoNameDocPrId, isoDocPrId, l
  */
 const createFooterXML = (footerRelId, footerDocPrId, footerPicId) => {
   // Footer image: fit within page width with margins
-  // Page width: 8.5 inches, with margins approximately 7.5 inches wide for footer
-  const footerWidth = 7.5 * 914400; // 6,858,000 EMU (fits within margins)
+  // Page width: 8.5 inches = 12240 twips
+  // Left/Right margins: 1008 twips each (from section properties)
+  // Available width: 12240 - 1008 - 1008 = 10224 twips
+  // Use table for perfect centering - full available width
+  const tableWidth = 10224; // Full available width in twips
+  const footerWidth = 7.0 * 914400; // 6,400,800 EMU (fits within margins with some padding)
   const footerHeight = 0.6 * 914400; // 548,640 EMU (height to maintain aspect ratio)
   
   // Use inline image for footer (not anchored) so it appears in the footer area
@@ -2482,15 +2487,48 @@ const createFooterXML = (footerRelId, footerDocPrId, footerPicId) => {
       xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
       xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
       xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">
-  <w:p>
-    <w:pPr>
+  <w:tbl>
+    <w:tblPr>
+      <w:tblW w:w="${tableWidth}" w:type="dxa"/>
+      <w:tblLayout w:type="fixed"/>
       <w:jc w:val="center"/>
-      <w:spacing w:before="0" w:after="0" w:line="200" w:lineRule="auto"/>
-    </w:pPr>
-    <w:r>
-      ${footerImageXML}
-    </w:r>
-  </w:p>
+      <w:tblBorders>
+        <w:top w:val="none" w:sz="0" w:space="0" w:color="auto"/>
+        <w:left w:val="none" w:sz="0" w:space="0" w:color="auto"/>
+        <w:bottom w:val="none" w:sz="0" w:space="0" w:color="auto"/>
+        <w:right w:val="none" w:sz="0" w:space="0" w:color="auto"/>
+        <w:insideH w:val="none" w:sz="0" w:space="0" w:color="auto"/>
+        <w:insideV w:val="none" w:sz="0" w:space="0" w:color="auto"/>
+      </w:tblBorders>
+      <w:tblLook w:val="04A0" w:firstRow="0" w:lastRow="0" w:firstColumn="0" w:lastColumn="0" w:noHBand="0" w:noVBand="1"/>
+    </w:tblPr>
+    <w:tblGrid>
+      <w:gridCol w:w="${tableWidth}"/>
+    </w:tblGrid>
+    <w:tr>
+      <w:tc>
+        <w:tcPr>
+          <w:tcW w:w="${tableWidth}" w:type="dxa"/>
+          <w:vAlign w:val="center"/>
+          <w:tcBorders>
+            <w:top w:val="none" w:sz="0" w:space="0" w:color="auto"/>
+            <w:left w:val="none" w:sz="0" w:space="0" w:color="auto"/>
+            <w:bottom w:val="none" w:sz="0" w:space="0" w:color="auto"/>
+            <w:right w:val="none" w:sz="0" w:space="0" w:color="auto"/>
+          </w:tcBorders>
+        </w:tcPr>
+        <w:p>
+          <w:pPr>
+            <w:jc w:val="center"/>
+            <w:spacing w:before="120" w:after="0" w:line="240" w:lineRule="auto"/>
+          </w:pPr>
+          <w:r>
+            ${footerImageXML}
+          </w:r>
+        </w:p>
+      </w:tc>
+    </w:tr>
+  </w:tbl>
 </w:ftr>`;
 };
 
