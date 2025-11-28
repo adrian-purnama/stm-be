@@ -527,9 +527,7 @@ const generateSpecificationTableXML = (specifications, drawingInfo = null, price
 
   // Add price row if provided
   if (priceInfo) {
-    const priceText = priceInfo.hasDiscount && priceInfo.discountLabel
-      ? `Harga: ${escapeXml(priceInfo.formattedClientNetPerUnit)} | Perhitungan: ${escapeXml(priceInfo.formattedBasePrice)} - ${escapeXml(priceInfo.formattedDiscount)}${escapeXml(priceInfo.discountLabel)} = ${escapeXml(priceInfo.formattedClientNetPerUnit)}`
-      : `Harga: ${escapeXml(priceInfo.formattedClientNetPerUnit)} | Perhitungan: ${escapeXml(priceInfo.formattedBasePrice)}`;
+    const priceText = `Harga: ${escapeXml(priceInfo.formattedClientNetPerUnit)}`;
     
     tableData.push({
       category: '',
@@ -631,9 +629,22 @@ const generateSpecificationTableXML = (specifications, drawingInfo = null, price
       const isSecondLastRow = rowIndex === tableData.length - 2;
       const isDrawingRow = drawingInfo && isSecondLastRow && priceInfo;
       const isPriceRow = isLastRow && priceInfo;
-      const boldTag = (isDrawingRow || (isLastRow && !priceInfo)) ? '<w:b/>' : '';
       const alignTag = isPriceRow ? '<w:jc w:val="right"/>' : '';
-      tableXML += `<w:p><w:pPr>${alignTag}<w:spacing w:after="0" w:line="240" w:lineRule="auto"/></w:pPr><w:r><w:rPr>${FONT_TAG_WITH_SIZE}${boldTag}</w:rPr><w:t>${escapeXml(specText)}</w:t></w:r></w:p>`;
+      
+      // Special handling for price row: make everything bold and bigger font
+      if (isPriceRow && specText.startsWith('Harga:')) {
+        // Font size 10 (20 half-points) for price - slightly bigger than regular text
+        const PRICE_FONT_SIZE_TAG = `<w:sz w:val="20"/><w:szCs w:val="20"/>`;
+        const PRICE_FONT_TAG = `${FONT_FAMILY_TAG}${PRICE_FONT_SIZE_TAG}`;
+        // Make entire price text bold with bigger font
+        tableXML += `<w:p><w:pPr>${alignTag}<w:spacing w:after="0" w:line="240" w:lineRule="auto"/></w:pPr>`;
+        tableXML += `<w:r><w:rPr>${PRICE_FONT_TAG}<w:b/></w:rPr><w:t>${escapeXml(specText)}</w:t></w:r>`;
+        tableXML += `</w:p>`;
+      } else {
+        // For drawing row or other spanning rows, use original logic
+        const boldTag = (isDrawingRow || (isLastRow && !priceInfo)) ? '<w:b/>' : '';
+        tableXML += `<w:p><w:pPr>${alignTag}<w:spacing w:after="0" w:line="240" w:lineRule="auto"/></w:pPr><w:r><w:rPr>${FONT_TAG_WITH_SIZE}${boldTag}</w:rPr><w:t>${escapeXml(specText)}</w:t></w:r></w:p>`;
+      }
       tableXML += '</w:tc>';
       // Skip adding the other two cells since they're merged into the first one
     } else {
@@ -1005,18 +1016,7 @@ const buildItemText = (offerItems, lineOfBusinessType = 'karoseri', drawingNumbe
         itemText += `\n   Spesifikasi lain sesuai gambar ${drawingNumber}\n`;
       }
       
-      const effectiveDiscount = Math.max(breakdown.basePrice - breakdown.nettoPerUnit, 0);
-      const hasDiscount = breakdown.discountPerUnit > 0;
-      const discountLabel =
-        item.discountType === 'percentage' && safeNumber(item.discountValue, 0) > 0
-          ? ` (${safeNumber(item.discountValue, 0)}%)`
-          : '';
       itemText += `\n   Harga: ${formattedClientNetPerUnit}\n`;
-      if (hasDiscount) {
-        itemText += `   Perhitungan: ${formattedBasePrice} - ${formattedDiscount}${discountLabel} = ${formattedClientNetPerUnit}\n`;
-      } else {
-        itemText += `   Perhitungan: ${formattedBasePrice}\n`;
-      }
     }
     
     // Add spacing between items
@@ -1439,6 +1439,29 @@ const generateDocumentXMLFromScratch = async (templateData, tableMap = {}, heade
     return createParagraph(text, false, alignment, spacingAfter);
   };
   
+  // Helper to create paragraph with price text (bold and bigger font)
+  const createPriceParagraph = (text, alignment = 'left', spacingAfter = 30) => {
+    const alignTag = alignment === 'center' ? '<w:jc w:val="center"/>' : 
+                     alignment === 'right' ? '<w:jc w:val="right"/>' : '';
+    
+    // Font size 10 (20 half-points) for price - slightly bigger than regular text
+    const PRICE_FONT_SIZE_TAG = `<w:sz w:val="20"/><w:szCs w:val="20"/>`;
+    const PRICE_FONT_TAG = `${FONT_FAMILY_TAG}${PRICE_FONT_SIZE_TAG}`;
+    
+    const escapedText = escapeXml(text);
+    
+    return `<w:p>
+      <w:pPr>
+        ${alignTag}
+        <w:spacing w:after="${spacingAfter}" w:line="200" w:lineRule="auto"/>
+      </w:pPr>
+      <w:r>
+        <w:rPr>${PRICE_FONT_TAG}<w:b/></w:rPr>
+        <w:t xml:space="preserve">${escapedText}</w:t>
+      </w:r>
+    </w:p>`;
+  };
+  
   // Helper to create a bordered box for customer greeting (compact, grouped format)
   const createCustomerGreetingBox = (salutationName, customerName, contactPerson) => {
     const displaySalutation = salutationName || contactPerson || '';
@@ -1711,7 +1734,10 @@ const generateDocumentXMLFromScratch = async (templateData, tableMap = {}, heade
       
       // Regular text line - preserve leading spaces
       if (trimmedLine) {
-        if (trimmedLine.startsWith('Spesifikasi  :') || trimmedLine.startsWith('Spesifikasi :') || trimmedLine.startsWith('Spesifikasi:')) {
+        if (trimmedLine.startsWith('Harga:')) {
+          // Price line - bold and bigger font
+          bodyXML += createPriceParagraph(originalLine, 'left', 30);
+        } else if (trimmedLine.startsWith('Spesifikasi  :') || trimmedLine.startsWith('Spesifikasi :') || trimmedLine.startsWith('Spesifikasi:')) {
           // Support multiple formats for backward compatibility (two spaces, one space, or no space)
           bodyXML += createParagraph(originalLine, true, 'left', 30);
         } else if (trimmedLine.match(/^\d+\./)) {
@@ -2442,21 +2468,13 @@ const createHeaderXML = (logoNameRelId, isoRelId, logoNameDocPrId, isoDocPrId, l
  * @returns {string} Footer XML
  */
 const createFooterXML = (footerRelId, footerDocPrId, footerPicId) => {
-  // Page width: 8.5 inches = 7,772,400 EMU
-  // Page margins: 0.25 inches each side = 228,600 EMU
-  // Available width: 8.5 - 0.25 - 0.25 = 8 inches = 7,315,200 EMU
-  // Footer image: smaller size to fit wholly within page, in front of text
-  const footerWidth = 7.5 * 914400; // 5,486,400 EMU (smaller, fits within margins)
-  const footerHeight = 0.6 * 914400; // 365,760 EMU (smaller height)
+  // Footer image: fit within page width with margins
+  // Page width: 8.5 inches, with margins approximately 7.5 inches wide for footer
+  const footerWidth = 7.5 * 914400; // 6,858,000 EMU (fits within margins)
+  const footerHeight = 0.6 * 914400; // 548,640 EMU (height to maintain aspect ratio)
   
-  // Page height: 11 inches = 10,058,400 EMU
-  // Bottom margin: 1440 twips = 0.1 inches = 91,440 EMU
-  // Position at bottom: page height - bottom margin - footer height
-  const pageHeight = 11 * 914400; // 10,058,400 EMU
-  const bottomMargin = 0.1 * 914400; // 91,440 EMU
-  const posY = pageHeight - bottomMargin - footerHeight; // Position within page boundaries
-  
-  const footerImageXML = footerRelId ? createAnchoredImageXML(footerRelId, footerWidth, footerHeight, footerDocPrId, footerPicId, 0, posY) : '';
+  // Use inline image for footer (not anchored) so it appears in the footer area
+  const footerImageXML = footerRelId ? createImageXML(footerRelId, footerWidth, footerHeight, footerDocPrId, footerPicId) : '';
   
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -2466,6 +2484,7 @@ const createFooterXML = (footerRelId, footerDocPrId, footerPicId) => {
       xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">
   <w:p>
     <w:pPr>
+      <w:jc w:val="center"/>
       <w:spacing w:before="0" w:after="0" w:line="200" w:lineRule="auto"/>
     </w:pPr>
     <w:r>
@@ -2477,8 +2496,13 @@ const createFooterXML = (footerRelId, footerDocPrId, footerPicId) => {
 
 /**
  * Create minimal DOCX structure from scratch
+ * @param {Object} templateData - Template data for the document
+ * @param {Object} tableMap - Map of table placeholders to table XML
+ * @param {Array} imageData - Array of image data
+ * @param {Object} qrCodeData - QR code data
+ * @param {Boolean} includeHeaderFooter - Whether to include header, footer, and watermark (default: true)
  */
-const createDOCXFromScratch = async (templateData, tableMap = {}, imageData = [], qrCodeData = null) => {
+const createDOCXFromScratch = async (templateData, tableMap = {}, imageData = [], qrCodeData = null, includeHeaderFooter = true) => {
   const PizZip = require('pizzip');
   const zip = new PizZip();
   
@@ -2604,8 +2628,11 @@ const createDOCXFromScratch = async (templateData, tableMap = {}, imageData = []
     });
   }
   
-  // Load header/footer images
-  const headerFooterImages = await loadHeaderFooterImages();
+  // Load header/footer images only if includeHeaderFooter is true
+  let headerFooterImages = { logoName: null, iso: null, footer: null, watermark: null };
+  if (includeHeaderFooter) {
+    headerFooterImages = await loadHeaderFooterImages();
+  }
   
   // Process header/footer images and create relationships
   let headerLogoNameRelId = null;
@@ -2623,7 +2650,7 @@ const createDOCXFromScratch = async (templateData, tableMap = {}, imageData = []
   let headerIsoImageNum = null;
   let footerImageNum = null;
   
-  if (headerFooterImages.logoName) {
+  if (includeHeaderFooter && headerFooterImages.logoName) {
     headerLogoNameImageNum = relationshipIdCounter;
     const imagePath = `word/media/image${relationshipIdCounter}.png`;
     zip.file(imagePath, headerFooterImages.logoName);
@@ -2633,7 +2660,7 @@ const createDOCXFromScratch = async (templateData, tableMap = {}, imageData = []
     relationshipIdCounter++;
   }
   
-  if (headerFooterImages.iso) {
+  if (includeHeaderFooter && headerFooterImages.iso) {
     headerIsoImageNum = relationshipIdCounter;
     const imagePath = `word/media/image${relationshipIdCounter}.png`;
     zip.file(imagePath, headerFooterImages.iso);
@@ -2643,7 +2670,7 @@ const createDOCXFromScratch = async (templateData, tableMap = {}, imageData = []
     relationshipIdCounter++;
   }
   
-  if (headerFooterImages.footer) {
+  if (includeHeaderFooter && headerFooterImages.footer) {
     footerImageNum = relationshipIdCounter;
     const imagePath = `word/media/image${relationshipIdCounter}.png`;
     zip.file(imagePath, headerFooterImages.footer);
@@ -2658,7 +2685,7 @@ const createDOCXFromScratch = async (templateData, tableMap = {}, imageData = []
   let watermarkDocPrId = null;
   let watermarkPicId = null;
   let watermarkImageNum = null;
-  if (headerFooterImages.watermark) {
+  if (includeHeaderFooter && headerFooterImages.watermark) {
     watermarkImageNum = relationshipIdCounter;
     const imagePath = `word/media/image${relationshipIdCounter}.png`;
     zip.file(imagePath, headerFooterImages.watermark);
@@ -2725,13 +2752,28 @@ const createDOCXFromScratch = async (templateData, tableMap = {}, imageData = []
   }
   
   // Generate document XML with processed images and header/footer references
-  const documentXML = await generateDocumentXMLFromScratch(processedTemplateData, tableMap, headerRelId, footerRelIdForDoc, watermarkRelId, watermarkDocPrId, watermarkPicId, qrCodeRelId, qrCodeDocPrId, qrCodePicId);
+  const documentXML = await generateDocumentXMLFromScratch(
+    processedTemplateData, 
+    tableMap, 
+    includeHeaderFooter ? headerRelId : null, 
+    includeHeaderFooter ? footerRelIdForDoc : null, 
+    includeHeaderFooter ? watermarkRelId : null, 
+    includeHeaderFooter ? watermarkDocPrId : null, 
+    includeHeaderFooter ? watermarkPicId : null, 
+    qrCodeRelId, 
+    qrCodeDocPrId, 
+    qrCodePicId
+  );
   
   // Create header XML (using placeholder IDs that will be replaced with rId1, rId2, etc.)
-  const headerXML = createHeaderXML('rId1', headerIsoImageNum ? 'rId2' : null, headerLogoNameDocPrId, headerIsoDocPrId, headerLogoNamePicId, headerIsoPicId, watermarkRelId, watermarkDocPrId, watermarkPicId);
+  const headerXML = includeHeaderFooter 
+    ? createHeaderXML('rId1', headerIsoImageNum ? 'rId2' : null, headerLogoNameDocPrId, headerIsoDocPrId, headerLogoNamePicId, headerIsoPicId, watermarkRelId, watermarkDocPrId, watermarkPicId)
+    : '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"></w:hdr>';
   
   // Create footer XML (using placeholder ID that will be replaced with rId1)
-  const footerXML = createFooterXML('rId1', footerDocPrId, footerPicId);
+  const footerXML = includeHeaderFooter 
+    ? createFooterXML('rId1', footerDocPrId, footerPicId)
+    : '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"></w:ftr>';
   
   // Content Types XML - include image content types if images exist
   let contentTypesXML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -2763,9 +2805,13 @@ const createDOCXFromScratch = async (templateData, tableMap = {}, imageData = []
   // Word relationships XML - include image relationships, header, and footer
   let wordRelsXML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>`;
+  
+  if (includeHeaderFooter) {
+    wordRelsXML += `
   <Relationship Id="rId${headerRelId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/>
   <Relationship Id="rId${footerRelIdForDoc}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer1.xml"/>`;
+  }
   
   if (imageRelationships.length > 0) {
     wordRelsXML += `\n${imageRelationships.join('\n')}`;
@@ -2841,9 +2887,10 @@ ${footerRelsParts.join('\n')}
  * @param {Object} quotationData - Full quotation data with header and offers
  * @param {String} offerId - Optional offer ID to generate specific offer
  * @param {Array} selectedNotes - Array of selected note indices
+ * @param {Boolean} includeHeaderFooter - Whether to include header, footer, and watermark (default: true)
  * @returns {Promise<Buffer>} Generated DOCX buffer
  */
-const generateQuotationDocument = async (quotationData, offerId = null, selectedNotes = [0, 1, 2, 3, 4, 5]) => {
+const generateQuotationDocument = async (quotationData, offerId = null, selectedNotes = [0, 1, 2, 3, 4, 5], includeHeaderFooter = true) => {
   try {
     const { header, rfq, offers } = quotationData;
     
@@ -3073,7 +3120,7 @@ const generateQuotationDocument = async (quotationData, offerId = null, selected
     }
     
     // Generate document without QR code first to get hash
-    const tempResult = await createDOCXFromScratch(templateData, tableMap, imageData, null);
+    const tempResult = await createDOCXFromScratch(templateData, tableMap, imageData, null, includeHeaderFooter);
     const tempBuffer = tempResult.buffer;
     
     // Hash the document (without QR code)
@@ -3115,7 +3162,7 @@ const generateQuotationDocument = async (quotationData, offerId = null, selected
     }
     
     // Now generate the final document WITH QR code embedded
-    const finalResult = await createDOCXFromScratch(templateData, tableMap, imageData, finalQrCodeData);
+    const finalResult = await createDOCXFromScratch(templateData, tableMap, imageData, finalQrCodeData, includeHeaderFooter);
     const finalBuffer = finalResult.buffer;
     
     // Note: The hash in the QR code is of the document WITHOUT the QR code.

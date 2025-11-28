@@ -1466,9 +1466,12 @@ router.patch('/:quotationNumber/track-download', authenticateToken, async (req, 
 router.get('/:id/download', authenticateToken, authorize(['quotation_view']), async (req, res) => {
   try {
     const { id } = req.params;
-    const { offerId } = req.query; // Optional: specific offer ID
+    const { offerId, includeHeaderFooter } = req.query; // Optional: specific offer ID and header/footer flag
     const selectedNotes = req.query.selectedNotes ? JSON.parse(req.query.selectedNotes) : [0, 1, 2, 3, 4, 5];
     const userId = req.user.userId;
+    
+    // Parse includeHeaderFooter (default to true if not specified)
+    const includeHeaderFooterFlag = includeHeaderFooter === 'false' ? false : true;
 
     // Get quotation header by ID or quotationNumber
     let header;
@@ -1494,7 +1497,8 @@ router.get('/:id/download', authenticateToken, authorize(['quotation_view']), as
         offers: result.offers
       },
       offerId || null,
-      selectedNotes
+      selectedNotes,
+      includeHeaderFooterFlag
     );
 
     // Handle new return format (object with buffer and qrCode) or legacy format (just buffer)
