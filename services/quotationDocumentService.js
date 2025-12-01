@@ -1019,6 +1019,12 @@ const buildItemText = (offerItems, lineOfBusinessType = 'karoseri', drawingNumbe
       itemText += `\n   Harga: ${formattedClientNetPerUnit}\n`;
     }
     
+    // Add item notes if available (for karoseri items)
+    if (item.notes && item.notes.trim()) {
+      const notesPadding = ' '.repeat(paddingBeforeKaroseri);
+      itemText += `\n${notesPadding}Catatan      : ${escapeXml(item.notes.trim())}\n`;
+    }
+    
     // Add spacing between items
     if (index < offerItems.length - 1) {
       itemText += "\n";
