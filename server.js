@@ -14,10 +14,7 @@ const PORT = process.env.PORT || 5000;
 app.use(cors({
   origin: [
     process.env.FRONTEND_URL,
-    /^https?:\/\/.*\.stm-asb\.co\.id$/,
-    "http://localhost:3001",
-    "https://catalogue.stm-asb.co.id",
-    "https://uat-catalogue.stm-asb.co.id"
+    process.env.CATALOGUE_URL
   ],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization'],
