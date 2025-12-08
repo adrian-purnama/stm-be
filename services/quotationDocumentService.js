@@ -3227,9 +3227,68 @@ const generateServiceSpecificationTableXML = (offerItems = []) => {
   return generatePricingTableXML(offerItems, 'service');
 };
 
+/**
+ * Convert DOCX document to another format using external LibreOffice API
+ * @param {Buffer} docxBuffer - DOCX file buffer
+ * @param {string} targetFormat - Target format: 'doc', 'pdf', or 'docx' (returns original if docx)
+ * @returns {Promise<Buffer>} Converted file buffer
+ */
+const convertDocumentFormat = async (docxBuffer, targetFormat = 'docx') => {
+  // If target format is docx, return original buffer
+  if (targetFormat === 'docx') {
+    return docxBuffer;
+  }
+
+  // Validate target format
+  const validFormats = ['doc', 'pdf'];
+  if (!validFormats.includes(targetFormat)) {
+    throw new Error(`Invalid target format: ${targetFormat}. Supported formats: ${validFormats.join(', ')}`);
+  }
+
+  try {
+    const FormData = require('form-data');
+    const fetch = require('node-fetch');
+    
+    // Create form data with the DOCX file
+    const form = new FormData();
+    form.append('file', docxBuffer, {
+      filename: 'quotation.docx',
+      contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    });
+
+    // Call external LibreOffice API
+    const apiUrl = 'https://libreoffice.amfphub.com';
+    const apiKey =  process.env.LIBREOFFICE_API_KEY;
+    
+    const response = await fetch(`${apiUrl}/convert?to=${targetFormat}`, {
+      method: 'POST',
+      headers: {
+        'X-API-KEY': apiKey,
+        ...form.getHeaders()
+      },
+      body: form
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Conversion failed: ${response.status} ${response.statusText} - ${errorText}`);
+    }
+
+    // Get the converted file as buffer
+    const arrayBuffer = await response.arrayBuffer();
+    const convertedBuffer = Buffer.from(arrayBuffer);
+
+    return convertedBuffer;
+  } catch (error) {
+    console.error('Error converting document format:', error);
+    throw new Error(`Failed to convert document to ${targetFormat}: ${error.message}`);
+  }
+};
+
 module.exports = {
   generateQuotationDocument,
   formatPrice,
   formatNotes,
+  convertDocumentFormat,
 };
 

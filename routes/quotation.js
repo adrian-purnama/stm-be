@@ -1461,17 +1461,29 @@ router.patch('/:quotationNumber/track-download', authenticateToken, async (req, 
 /**
  * GET /api/quotations/:id/download
  * Permission: quotation_view
- * Description: Download quotation as DOCX document (server-side generation)
+ * Description: Download quotation as DOCX, DOC, or PDF document (server-side generation)
+ * Query params:
+ *   - format: 'docx' (default), 'doc', or 'pdf'
+ *   - offerId: Optional specific offer ID
+ *   - includeHeaderFooter: 'true' (default) or 'false'
+ *   - selectedNotes: JSON array of selected note indices
  */
 router.get('/:id/download', authenticateToken, authorize(['quotation_view']), async (req, res) => {
   try {
     const { id } = req.params;
-    const { offerId, includeHeaderFooter } = req.query; // Optional: specific offer ID and header/footer flag
+    const { offerId, includeHeaderFooter, format = 'docx' } = req.query; // Optional: specific offer ID, header/footer flag, and format
     const selectedNotes = req.query.selectedNotes ? JSON.parse(req.query.selectedNotes) : [0, 1, 2, 3, 4, 5];
     const userId = req.user.userId;
     
     // Parse includeHeaderFooter (default to true if not specified)
     const includeHeaderFooterFlag = includeHeaderFooter === 'false' ? false : true;
+    
+    // Validate format
+    const validFormats = ['docx', 'doc', 'pdf'];
+    const targetFormat = format.toLowerCase();
+    if (!validFormats.includes(targetFormat)) {
+      return sendErrorResponse(res, 400, 'Invalid format', `Format must be one of: ${validFormats.join(', ')}`);
+    }
 
     // Get quotation header by ID or quotationNumber
     let header;
@@ -1488,8 +1500,8 @@ router.get('/:id/download', authenticateToken, authorize(['quotation_view']), as
     // Get all offers for this quotation
     const result = await getQuotationOffers(header.quotationNumber);
     
-    // Generate document using the service
-    const { generateQuotationDocument } = require('../services/quotationDocumentService');
+    // Generate document using the service (always generates DOCX first)
+    const { generateQuotationDocument, convertDocumentFormat } = require('../services/quotationDocumentService');
     const docResult = await generateQuotationDocument(
       {
         header: result.header,
@@ -1502,20 +1514,34 @@ router.get('/:id/download', authenticateToken, authorize(['quotation_view']), as
     );
 
     // Handle new return format (object with buffer and qrCode) or legacy format (just buffer)
-    const docBuffer = docResult?.buffer || docResult;
+    const docxBuffer = docResult?.buffer || docResult;
     const qrCodeData = docResult?.qrCode || null;
+
+    // Convert to target format if needed
+    let finalBuffer;
+    if (targetFormat === 'docx') {
+      finalBuffer = docxBuffer;
+    } else {
+      // Convert DOCX to DOC or PDF using external service
+      try {
+        finalBuffer = await convertDocumentFormat(docxBuffer, targetFormat);
+      } catch (conversionError) {
+        console.error('Error converting document format:', conversionError);
+        return sendErrorResponse(res, 500, 'Failed to convert document format', conversionError.message);
+      }
+    }
 
     // Track download
     try {
       await updateQuotationHeader(result.header._id, {
-        $push: { downloads: { userId, downloadedAt: new Date() } }
+        $push: { downloads: { userId, downloadedAt: new Date(), format: targetFormat } }
       });
     } catch (trackError) {
       console.warn('Failed to track download:', trackError);
       // Don't fail the download if tracking fails
     }
 
-    // Determine filename
+    // Determine filename and content type based on format
     const quotationNumber = header.quotationNumber.replace(/[/\\]/g, '_');
     let filename = `Quotation_${quotationNumber}`;
     
@@ -1541,15 +1567,34 @@ router.get('/:id/download', authenticateToken, authorize(['quotation_view']), as
         filename += `_Offer_${foundOffer.offerNumber.replace(/[/\\]/g, '_')}`;
       }
     }
-    filename += '.docx';
+    
+    // Set filename extension and content type based on format
+    let contentType;
+    let fileExtension;
+    switch (targetFormat) {
+      case 'pdf':
+        fileExtension = '.pdf';
+        contentType = 'application/pdf';
+        break;
+      case 'doc':
+        fileExtension = '.doc';
+        contentType = 'application/msword';
+        break;
+      case 'docx':
+      default:
+        fileExtension = '.docx';
+        contentType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+        break;
+    }
+    filename += fileExtension;
 
-    // Ensure docBuffer is a proper Buffer instance
-    const finalBuffer = Buffer.isBuffer(docBuffer) ? docBuffer : Buffer.from(docBuffer);
+    // Ensure finalBuffer is a proper Buffer instance
+    const outputBuffer = Buffer.isBuffer(finalBuffer) ? finalBuffer : Buffer.from(finalBuffer);
     
     // Set response headers
-    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+    res.setHeader('Content-Type', contentType);
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-    res.setHeader('Content-Length', finalBuffer.length);
+    res.setHeader('Content-Length', outputBuffer.length);
     
     // Add QR code metadata in response headers (optional, for frontend use)
     if (qrCodeData) {
@@ -1558,7 +1603,7 @@ router.get('/:id/download', authenticateToken, authorize(['quotation_view']), as
     }
 
     // Send the document as Buffer
-    res.send(finalBuffer);
+    res.send(outputBuffer);
   } catch (error) {
     console.error('Error generating quotation document:', error);
     return sendErrorResponse(res, 500, 'Failed to generate quotation document', error.message);
