@@ -464,9 +464,12 @@ const formatNotes = (selectedNotes, excludePPN, paymentTerms) => {
   ];
 
   // Add selected notes based on indices
+  // Only include notes whose indices are in the selectedNotes array
+  // If a checkbox is unchecked, its index won't be in selectedNotes, so it won't be included
   if (Array.isArray(selectedNotes)) {
     selectedNotes.forEach((index) => {
-      if (predefinedNotes[index] && predefinedNotes[index].selected) {
+      // Validate index is within bounds and add the note
+      if (predefinedNotes[index] && typeof index === 'number' && index >= 0 && index < predefinedNotes.length) {
         notes.push(predefinedNotes[index].text);
       }
     });

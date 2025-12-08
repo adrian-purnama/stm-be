@@ -1472,7 +1472,8 @@ router.get('/:id/download', authenticateToken, authorize(['quotation_view']), as
   try {
     const { id } = req.params;
     const { offerId, includeHeaderFooter, format = 'docx' } = req.query; // Optional: specific offer ID, header/footer flag, and format
-    const selectedNotes = req.query.selectedNotes ? JSON.parse(req.query.selectedNotes) : [0, 1, 2, 3, 4, 5];
+    // Parse selectedNotes - if not provided or empty, default to empty array (no notes selected)
+    const selectedNotes = req.query.selectedNotes ? JSON.parse(req.query.selectedNotes) : [];
     const userId = req.user.userId;
     
     // Parse includeHeaderFooter (default to true if not specified)
