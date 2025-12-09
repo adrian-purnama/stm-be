@@ -1691,11 +1691,12 @@ const generateDocumentXMLFromScratch = async (templateData, tableMap = {}, heade
   let bodyXML = '';
   
   // Header: PENAWARAN with underline, bold, and larger font
+  // Add spacing before first paragraph to ensure proper top margin in PDF conversion
   const escapedPenawaran = escapeXml('PENAWARAN');
   bodyXML += `<w:p>
     <w:pPr>
       <w:jc w:val="center"/>
-      <w:spacing w:after="40" w:line="200" w:lineRule="auto"/>
+      <w:spacing w:before="240" w:after="40" w:line="200" w:lineRule="auto"/>
     </w:pPr>
     <w:r>
       <w:rPr>
@@ -1976,10 +1977,11 @@ const generateDocumentXMLFromScratch = async (templateData, tableMap = {}, heade
   }
   
   // Build section properties with header/footer references
-  // Small margins on left and right, slightly increased top margin
+  // Increased top margin to prevent content from being cut off during PDF conversion
+  // LibreOffice PDF conversion requires more top margin space than Word display
   // Header margin adds space between top of page and header content
   // Footer margin increased to prevent footer image from being cropped at the top
-  let sectPrContent = `<w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1800" w:right="1008" w:bottom="1440" w:left="1008" w:header="360" w:footer="720" w:gutter="0"/>`;
+  let sectPrContent = `<w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="2520" w:right="1008" w:bottom="1440" w:left="1008" w:header="720" w:footer="720" w:gutter="0"/>`;
   
   if (headerRelId) {
     sectPrContent += `<w:headerReference w:type="default" r:id="rId${headerRelId}"/>`;
@@ -2935,9 +2937,10 @@ ${footerRelsParts.join('\n')}
  * @param {String} offerId - Optional offer ID to generate specific offer
  * @param {Array} selectedNotes - Array of selected note indices
  * @param {Boolean} includeHeaderFooter - Whether to include header, footer, and watermark (default: true)
+ * @param {Boolean} isRequester - Whether the user is a requester (default: false). If true, notes and notes images are excluded.
  * @returns {Promise<Buffer>} Generated DOCX buffer
  */
-const generateQuotationDocument = async (quotationData, offerId = null, selectedNotes = [0, 1, 2, 3, 4, 5], includeHeaderFooter = true) => {
+const generateQuotationDocument = async (quotationData, offerId = null, selectedNotes = [0, 1, 2, 3, 4, 5], includeHeaderFooter = true, isRequester = false) => {
   try {
     const { header, rfq, offers } = quotationData;
     
@@ -3047,9 +3050,9 @@ const generateQuotationDocument = async (quotationData, offerId = null, selected
       }
     }
 
-    // Collect notes images data
+    // Collect notes images data - exclude if user is requester
     const notesImagesData = [];
-    if (activeOffer.notesImages && activeOffer.notesImages.length > 0) {
+    if (!isRequester && activeOffer.notesImages && activeOffer.notesImages.length > 0) {
       for (const notesImage of activeOffer.notesImages) {
         try {
           const imageFile = notesImage.imageFile || notesImage;
@@ -3069,10 +3072,15 @@ const generateQuotationDocument = async (quotationData, offerId = null, selected
       }
     }
     
+    // Exclude offer notes if user is requester
+    const offerForTemplate = isRequester 
+      ? { ...activeOffer, notes: undefined, notesImages: [] }
+      : activeOffer;
+    
     // Prepare data for template
     const templateData = await prepareQuotationData(
       header,
-      activeOffer,
+      offerForTemplate,
       selectedNotes,
       drawingsInfo,
       imageData,
@@ -3234,9 +3242,14 @@ const generateServiceSpecificationTableXML = (offerItems = []) => {
  * Convert DOCX document to another format using external LibreOffice API
  * @param {Buffer} docxBuffer - DOCX file buffer
  * @param {string} targetFormat - Target format: 'doc', 'pdf', or 'docx' (returns original if docx)
+ * @param {Object} options - Optional conversion options
+ * @param {number} options.marginTop - Top margin in millimeters (default: 30 for PDF to prevent header cutoff)
+ * @param {number} options.marginBottom - Bottom margin in millimeters (default: 20)
+ * @param {number} options.marginLeft - Left margin in millimeters (default: 18)
+ * @param {number} options.marginRight - Right margin in millimeters (default: 18)
  * @returns {Promise<Buffer>} Converted file buffer
  */
-const convertDocumentFormat = async (docxBuffer, targetFormat = 'docx') => {
+const convertDocumentFormat = async (docxBuffer, targetFormat = 'docx', options = {}) => {
   // If target format is docx, return original buffer
   if (targetFormat === 'docx') {
     return docxBuffer;
@@ -3263,7 +3276,29 @@ const convertDocumentFormat = async (docxBuffer, targetFormat = 'docx') => {
     const apiUrl = 'https://libreoffice.amfphub.com';
     const apiKey =  process.env.LIBREOFFICE_API_KEY;
     
-    const response = await fetch(`${apiUrl}/convert?to=${targetFormat}`, {
+    // Build query string - only add margin parameters if explicitly provided
+    // Note: Document margins are already set in the DOCX file (2520 twips top margin)
+    // API margin parameters are only needed if you want to override document margins
+    const queryParams = new URLSearchParams({
+      to: targetFormat
+    });
+    
+    // Only add margin parameters if explicitly provided in options
+    // This avoids API conversion errors while still allowing custom margins when needed
+    if (options.marginTop !== undefined) {
+      queryParams.append('margin_top', options.marginTop.toString());
+    }
+    if (options.marginBottom !== undefined) {
+      queryParams.append('margin_bottom', options.marginBottom.toString());
+    }
+    if (options.marginLeft !== undefined) {
+      queryParams.append('margin_left', options.marginLeft.toString());
+    }
+    if (options.marginRight !== undefined) {
+      queryParams.append('margin_right', options.marginRight.toString());
+    }
+    
+    const response = await fetch(`${apiUrl}/convert?${queryParams.toString()}`, {
       method: 'POST',
       headers: {
         'X-API-KEY': apiKey,

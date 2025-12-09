@@ -1501,6 +1501,14 @@ router.get('/:id/download', authenticateToken, authorize(['quotation_view']), as
     // Get all offers for this quotation
     const result = await getQuotationOffers(header.quotationNumber);
     
+    // Check if user is a requester
+    const { hasPermission } = require('../utils/permissionHelper');
+    const User = require('../models/user.model');
+    const user = await User.findById(userId).populate('permissions');
+    const isRequester = hasPermission(user, 'quotation_requester') || 
+                       (header.requesterId && header.requesterId.toString() === userId.toString()) ||
+                       (result.rfq && result.rfq.requesterId && result.rfq.requesterId.toString() === userId.toString());
+    
     // Generate document using the service (always generates DOCX first)
     const { generateQuotationDocument, convertDocumentFormat } = require('../services/quotationDocumentService');
     const docResult = await generateQuotationDocument(
@@ -1511,7 +1519,8 @@ router.get('/:id/download', authenticateToken, authorize(['quotation_view']), as
       },
       offerId || null,
       selectedNotes,
-      includeHeaderFooterFlag
+      includeHeaderFooterFlag,
+      isRequester
     );
 
     // Handle new return format (object with buffer and qrCode) or legacy format (just buffer)
