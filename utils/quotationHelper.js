@@ -328,29 +328,103 @@ const createQuotationOffer = async (quotationNumber, offerData) => {
       formattedData.parentOfferId
     );
     
-    const offerNumber = offerNumberResult.offerNumber;
+    let offerNumber = offerNumberResult.offerNumber;
     if (offerNumberResult.offerNumberInQuotation) {
       offerNumberInQuotation = offerNumberResult.offerNumberInQuotation;
     }
 
-    // Extract offer items from offerData
+    // Extract offer items from offerData (save before deletion)
     const offerItems = formattedData.offerItems || [];
     console.log('Backend: Received offerItems:', offerItems);
     console.log('Backend: offerItems length:', offerItems.length);
     delete formattedData.offerItems; // Remove from offer data
 
-    // Create quotation offer
+    // Create quotation offer with retry logic for duplicate key errors
+    let offer;
+    let retryAttempts = 0;
+    const MAX_SAVE_RETRIES = 10;
+    
+    while (retryAttempts < MAX_SAVE_RETRIES) {
+      try {
+        offer = new QuotationOffer({
+          ...formattedData,
+          quotationHeaderId: header._id,
+          offerNumber,
+          offerNumberInQuotation,
+          revision,
+          parentQuotationId
+        });
 
-    const offer = new QuotationOffer({
-      ...formattedData,
-      quotationHeaderId: header._id,
-      offerNumber,
-      offerNumberInQuotation,
-      revision,
-      parentQuotationId
-    });
-
-    await offer.save();
+        await offer.save();
+        
+        // If save succeeds, break out of retry loop
+        break;
+      } catch (saveError) {
+        // Check if it's a duplicate key error (E11000)
+        if (saveError.code === 11000 || saveError.message?.includes('duplicate key') || saveError.message?.includes('E11000')) {
+          retryAttempts++;
+          console.warn(`Offer number ${offerNumber} already exists, auto-incrementing (attempt ${retryAttempts}/${MAX_SAVE_RETRIES})`);
+          
+          if (retryAttempts >= MAX_SAVE_RETRIES) {
+            throw new Error(`Failed to create offer after ${MAX_SAVE_RETRIES} attempts due to duplicate offer numbers`);
+          }
+          
+          // For new offers (not revisions), manually find the next available number
+          if (!formattedData.isRevision) {
+            // Find the highest offer number in quotation
+            const existingOffers = await QuotationOffer.find({
+              quotationHeaderId: header._id,
+              revision: 0
+            }).sort({ offerNumberInQuotation: -1 }).limit(1);
+            
+            if (existingOffers.length > 0) {
+              offerNumberInQuotation = existingOffers[0].offerNumberInQuotation + 1;
+            } else {
+              offerNumberInQuotation = 1;
+            }
+            
+            // Keep incrementing until we find a free number
+            let checkExists = await QuotationOffer.findOne({ 
+              offerNumber: `${quotationNumber}-${offerNumberInQuotation}` 
+            });
+            
+            let incrementAttempts = 0;
+            while (checkExists && incrementAttempts < 50) { // Separate counter for increment attempts
+              offerNumberInQuotation++;
+              checkExists = await QuotationOffer.findOne({ 
+                offerNumber: `${quotationNumber}-${offerNumberInQuotation}` 
+              });
+              incrementAttempts++;
+            }
+            
+            if (checkExists) {
+              throw new Error(`Unable to find available offer number after ${incrementAttempts} increments`);
+            }
+            
+            offerNumber = `${quotationNumber}-${offerNumberInQuotation}`;
+          } else {
+            // For revisions, regenerate using generateOfferNumber with retry
+            const retryResult = await generateOfferNumber(
+              quotationNumber, 
+              formattedData.isRevision, 
+              formattedData.parentOfferId,
+              retryAttempts // Pass retry count to generateOfferNumber
+            );
+            offerNumber = retryResult.offerNumber;
+            if (retryResult.offerNumberInQuotation) {
+              offerNumberInQuotation = retryResult.offerNumberInQuotation;
+            }
+          }
+          
+          // Add a small delay to allow database to catch up
+          await new Promise(resolve => setTimeout(resolve, 50 * retryAttempts));
+          continue;
+        } else {
+          // If it's not a duplicate key error, throw it
+          throw saveError;
+        }
+      }
+    }
 
     // Create offer items if provided
     if (offerItems.length > 0) {
