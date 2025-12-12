@@ -57,7 +57,13 @@ const generateQuotationNumber = async () => {
 };
 
 // Generate offer number for a specific quotation
-const generateOfferNumber = async (quotationNumber, isRevision = false, parentOfferId = null) => {
+const generateOfferNumber = async (quotationNumber, isRevision = false, parentOfferId = null, retryCount = 0) => {
+  // Safety limit to prevent infinite recursion
+  const MAX_RETRIES = 10;
+  if (retryCount >= MAX_RETRIES) {
+    throw new Error(`Failed to generate unique offer number after ${MAX_RETRIES} attempts`);
+  }
+
   // Find quotation header
   const header = await QuotationHeader.findOne({ quotationNumber });
   if (!header) {
@@ -91,7 +97,8 @@ const generateOfferNumber = async (quotationNumber, isRevision = false, parentOf
     // Double-check that this revision number doesn't already exist
     const existingOffer = await QuotationOffer.findOne({ offerNumber });
     if (existingOffer) {
-      throw new Error(`Revision ${offerNumber} already exists`);
+      // Recursively retry with incremented retry count
+      return await generateOfferNumber(quotationNumber, isRevision, parentOfferId, retryCount + 1);
     }
     
     return { offerNumber, offerNumberInQuotation: parentOffer.offerNumberInQuotation };
@@ -117,7 +124,8 @@ const generateOfferNumber = async (quotationNumber, isRevision = false, parentOf
     // Double-check that this number doesn't already exist (race condition protection)
     const existingOffer = await QuotationOffer.findOne({ offerNumber });
     if (existingOffer) {
-      throw new Error(`Offer number ${offerNumber} already exists`);
+      // Recursively retry with incremented retry count
+      return await generateOfferNumber(quotationNumber, isRevision, parentOfferId, retryCount + 1);
     }
     
     return { offerNumber, offerNumberInQuotation: nextOfferNumberInQuotation };
