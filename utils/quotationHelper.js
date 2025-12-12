@@ -59,7 +59,7 @@ const generateQuotationNumber = async () => {
 // Generate offer number for a specific quotation
 const generateOfferNumber = async (quotationNumber, isRevision = false, parentOfferId = null, retryCount = 0) => {
   // Safety limit to prevent infinite recursion
-  const MAX_RETRIES = 10;
+  const MAX_RETRIES = 100;
   if (retryCount >= MAX_RETRIES) {
     throw new Error(`Failed to generate unique offer number after ${MAX_RETRIES} attempts`);
   }
@@ -80,51 +80,94 @@ const generateOfferNumber = async (quotationNumber, isRevision = false, parentOf
     // Extract the base offer number (without revision suffix)
     const baseOfferNumber = parentOffer.offerNumber.split('-Rev')[0];
     
-    // Find the highest revision number for this offer
-    const existingRevisions = await QuotationOffer.find({
-      quotationHeaderId: header._id,
-      offerNumberInQuotation: parentOffer.offerNumberInQuotation,
-      revision: { $gt: 0 }
-    }).sort({ revision: -1 });
+    // Find the highest revision number for this offer using aggregation for atomicity
+    const revisionResult = await QuotationOffer.aggregate([
+      {
+        $match: {
+          quotationHeaderId: header._id,
+          offerNumberInQuotation: parentOffer.offerNumberInQuotation,
+          revision: { $gt: 0 }
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          maxRevision: { $max: '$revision' }
+        }
+      }
+    ]);
     
     let revision = 1;
-    if (existingRevisions.length > 0) {
-      revision = existingRevisions[0].revision + 1;
+    if (revisionResult.length > 0 && revisionResult[0].maxRevision) {
+      revision = revisionResult[0].maxRevision + 1;
     }
     
     const offerNumber = `${baseOfferNumber}-Rev${revision}`;
     
     // Double-check that this revision number doesn't already exist
-    const existingOffer = await QuotationOffer.findOne({ offerNumber });
+    // Check both by offerNumber string and by revision number to be safe
+    const existingOffer = await QuotationOffer.findOne({
+      $or: [
+        { offerNumber },
+        {
+          quotationHeaderId: header._id,
+          offerNumberInQuotation: parentOffer.offerNumberInQuotation,
+          revision: revision
+        }
+      ]
+    });
+    
     if (existingOffer) {
-      // Recursively retry with incremented retry count
+      // Add a small delay to allow database to catch up, then recursively retry
+      await new Promise(resolve => setTimeout(resolve, 50 * (retryCount + 1)));
       return await generateOfferNumber(quotationNumber, isRevision, parentOfferId, retryCount + 1);
     }
     
     return { offerNumber, offerNumberInQuotation: parentOffer.offerNumberInQuotation };
   } else {
     // For new offers, find the next offer number in quotation
-    const existingOffers = await QuotationOffer.find({ 
-      quotationHeaderId: header._id,
-      revision: 0 // Only count original offers, not revisions
-    }, { offerNumberInQuotation: 1 });
+    // Use aggregation to get the max offerNumberInQuotation atomically
+    const result = await QuotationOffer.aggregate([
+      {
+        $match: {
+          quotationHeaderId: header._id,
+          revision: 0 // Only count original offers, not revisions
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          maxOfferNumber: { $max: '$offerNumberInQuotation' }
+        }
+      }
+    ]);
     
     // Find the highest offer number in quotation
     let highestOfferNumberInQuotation = 0;
-  existingOffers.forEach(offer => {
-      if (offer.offerNumberInQuotation > highestOfferNumberInQuotation) {
-        highestOfferNumberInQuotation = offer.offerNumberInQuotation;
-      }
-    });
+    if (result.length > 0 && result[0].maxOfferNumber) {
+      highestOfferNumberInQuotation = result[0].maxOfferNumber;
+    }
 
     const nextOfferNumberInQuotation = highestOfferNumberInQuotation + 1;
     const offerNumber = `${quotationNumber}-${nextOfferNumberInQuotation}`;
     
     
-    // Double-check that this number doesn't already exist (race condition protection)
-    const existingOffer = await QuotationOffer.findOne({ offerNumber });
+    // Double-check that this offerNumberInQuotation doesn't already exist (race condition protection)
+    // Check both by offerNumber string and by offerNumberInQuotation to be safe
+    const existingOffer = await QuotationOffer.findOne({
+      $or: [
+        { offerNumber },
+        {
+          quotationHeaderId: header._id,
+          offerNumberInQuotation: nextOfferNumberInQuotation,
+          revision: 0
+        }
+      ]
+    });
+    
     if (existingOffer) {
-      // Recursively retry with incremented retry count
+      // Add a small delay to allow database to catch up, then recursively retry
+      await new Promise(resolve => setTimeout(resolve, 50 * (retryCount + 1)));
       return await generateOfferNumber(quotationNumber, isRevision, parentOfferId, retryCount + 1);
     }
     
