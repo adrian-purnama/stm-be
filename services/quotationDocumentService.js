@@ -446,9 +446,6 @@ const formatNotes = (selectedNotes, excludePPN, paymentTerms) => {
 
   if (excludePPN) {
     notes.push("Harga tersebut diatas Belum Termasuk PPN 11%");
-    notes.push(
-      "Nilai PPN menyesuaikan ketentuan pemerintah saat terbit faktur pajak"
-    );
   } else {
     notes.push("Harga tersebut diatas Sudah Termasuk PPN 11%");
   }
@@ -460,7 +457,8 @@ const formatNotes = (selectedNotes, excludePPN, paymentTerms) => {
     { text: 'Harga tidak mengikat bisa berubah sewaktu-waktu tanpa pemberitahuan terlebih dahulu.', selected: true },
     { text: 'DIMENSI KAROSERI diluar SKRB tidak diperuntukan untuk dijalan raya (OFF ROAD)', selected: true },
     { text: 'Uji Type yang terbit hanya untuk karoseri dengan ukuran standard Dishub. Ukuran Oversize STM tidak bertanggung jawab jika uji type tidak dapat terbit dari Dishub', selected: true },
-    { text: 'Tanpa acc keur', selected: true }
+    { text: 'Tanpa acc keur', selected: true },
+    { text: 'Nilai PPN menyesuaikan ketentuan pemerintah saat terbit faktur pajak', selected: true }
   ];
 
   // Add selected notes based on indices
@@ -1174,13 +1172,16 @@ const prepareQuotationData = async (header, offer, selectedNotes = [], drawingsI
   const contactName = rfqContext.contactPerson?.name || header.contactPerson?.name || "";
   let salutationName = "";
   if (contactName && contactName.trim()) {
-    const gender = String(contactGender || "").toLowerCase().trim();
-    if (gender === "male" || gender === "m") {
+    // Handle gender values from RFQ model enum: 'Male', 'Female', 'Other'
+    // Also handle lowercase variations for robustness
+    const gender = String(contactGender || "").trim();
+    const genderLower = gender.toLowerCase();
+    if (genderLower === "male" || genderLower === "m") {
       salutationName = `Bapak ${contactName}`;
-    } else if (gender === "female" || gender === "f") {
+    } else if (genderLower === "female" || genderLower === "f") {
       salutationName = `Ibu ${contactName}`;
     } else {
-      // Default if gender not specified - just use the name
+      // Default if gender not specified or is 'Other' - just use the name
       salutationName = contactName;
     }
   }
@@ -1613,9 +1614,9 @@ const generateDocumentXMLFromScratch = async (templateData, tableMap = {}, heade
     const escapedDate = escapeXml(quotationDate || '');
     
     // Full page width: 12240 twips (A4 width)
-    // With margins: 720 left + 720 right = 1440 twips
-    // Usable width: 12240 - 1440 = 10800 twips
-    const tableWidth = 10800; // Full usable width
+    // With margins: 1008 left + 1008 right = 2016 twips (from section properties)
+    // Usable width: 12240 - 2016 = 10224 twips
+    const tableWidth = 10224; // Full usable width
     const leftCellWidth = tableWidth / 2; // Half for left content
     const rightCellWidth = tableWidth / 2; // Half for right content
     

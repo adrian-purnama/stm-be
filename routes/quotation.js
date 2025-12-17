@@ -1553,7 +1553,43 @@ router.get('/:id/download', authenticateToken, authorize(['quotation_view']), as
 
     // Determine filename and content type based on format
     const quotationNumber = header.quotationNumber.replace(/[/\\]/g, '_');
+    
+    // Get customer name from result.header or result.rfq
+    // result.header should have customerName copied from RFQ in getQuotationOffers
+    let rawCustomerName = '';
+    if (result.header && result.header.customerName) {
+      rawCustomerName = result.header.customerName;
+    } else if (result.rfq && result.rfq.customerName) {
+      rawCustomerName = result.rfq.customerName;
+    }
+    
+    // Sanitize customer name for filename use
+    let customerName = '';
+    if (rawCustomerName && typeof rawCustomerName === 'string') {
+      customerName = rawCustomerName
+        .replace(/[/\\?%*:|"<>]/g, '_') // Replace invalid filename characters
+        .replace(/\s+/g, '_') // Replace spaces with underscores
+        .trim();
+    }
+    
+    // Debug logging
+    console.log('[Download] Customer name for filename:', {
+      rawCustomerName,
+      customerName,
+      hasHeaderCustomerName: !!(result.header && result.header.customerName),
+      hasRfqCustomerName: !!(result.rfq && result.rfq.customerName),
+      headerKeys: result.header ? Object.keys(result.header) : 'no header',
+      rfqKeys: result.rfq ? Object.keys(result.rfq) : 'no rfq'
+    });
+    
     let filename = `Quotation_${quotationNumber}`;
+    
+    // Add customer name to filename if available
+    console.log('[Download] Before adding customer name - filename:', filename, 'customerName:', customerName, 'will add:', !!(customerName && customerName.length > 0));
+    if (customerName && customerName.length > 0) {
+      filename += `_${customerName}`;
+      console.log('[Download] After adding customer name - filename:', filename);
+    }
     
     if (offerId) {
       // Find offer to get offer number
@@ -1598,12 +1634,19 @@ router.get('/:id/download', authenticateToken, authorize(['quotation_view']), as
     }
     filename += fileExtension;
 
+    // Debug: Log final filename before setting header
+    console.log('[Download] Final filename:', filename);
+
     // Ensure finalBuffer is a proper Buffer instance
     const outputBuffer = Buffer.isBuffer(finalBuffer) ? finalBuffer : Buffer.from(finalBuffer);
     
+    // Encode filename for Content-Disposition header (RFC 5987)
+    // Use both filename (for older browsers) and filename* (for modern browsers with UTF-8 support)
+    const encodedFilename = encodeURIComponent(filename);
+    
     // Set response headers
     res.setHeader('Content-Type', contentType);
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"; filename*=UTF-8''${encodedFilename}`);
     res.setHeader('Content-Length', outputBuffer.length);
     
     // Add QR code metadata in response headers (optional, for frontend use)

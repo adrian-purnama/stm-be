@@ -90,6 +90,10 @@ const offerItemSchema = new mongoose.Schema({
         type: String,
         required: true,
         trim: true
+      },
+      order: {
+        type: Number,
+        default: 0
       }
     }]
   }],
@@ -194,6 +198,24 @@ offerItemSchema.pre('save', function(next) {
   if (this.isModified('isAccepted') && !this.isAccepted) {
     this.acceptedAt = undefined;
     this.acceptedBy = undefined;
+  }
+  
+  // Normalize order values for specification items (ensure sequential ordering)
+  if (this.specifications && Array.isArray(this.specifications)) {
+    this.specifications.forEach((spec) => {
+      if (spec.items && Array.isArray(spec.items)) {
+        // Sort items by order, then reassign sequential order values
+        spec.items.sort((a, b) => {
+          const orderA = a.order !== undefined && a.order !== null ? a.order : Number.MAX_SAFE_INTEGER;
+          const orderB = b.order !== undefined && b.order !== null ? b.order : Number.MAX_SAFE_INTEGER;
+          return orderA - orderB;
+        });
+        // Assign sequential order values (0, 1, 2, ...)
+        spec.items.forEach((item, index) => {
+          item.order = index;
+        });
+      }
+    });
   }
   
   next();
