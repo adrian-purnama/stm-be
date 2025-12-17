@@ -25,6 +25,10 @@ const customSpecificationItemSchema = new mongoose.Schema({
     type: String,
     required: true,
     trim: true
+  },
+  order: {
+    type: Number,
+    default: 0
   }
 }, { _id: false });
 
@@ -175,6 +179,29 @@ const drawingSpecificationSchema = new mongoose.Schema({
   }
 }, {
   timestamps: true
+});
+
+// Pre-save middleware to normalize order values for custom specification items
+drawingSpecificationSchema.pre('save', function(next) {
+  // Normalize order values for custom specification items (ensure sequential ordering)
+  if (this.customSpecifications && Array.isArray(this.customSpecifications)) {
+    this.customSpecifications.forEach((spec) => {
+      if (spec.items && Array.isArray(spec.items)) {
+        // Sort items by order, then reassign sequential order values
+        spec.items.sort((a, b) => {
+          const orderA = a.order !== undefined && a.order !== null ? a.order : Number.MAX_SAFE_INTEGER;
+          const orderB = b.order !== undefined && b.order !== null ? b.order : Number.MAX_SAFE_INTEGER;
+          return orderA - orderB;
+        });
+        // Assign sequential order values (0, 1, 2, ...)
+        spec.items.forEach((item, index) => {
+          item.order = index;
+        });
+      }
+    });
+  }
+  
+  next();
 });
 
 // Helper function to normalize key segments (UPPERCASE, remove spaces and slashes)
