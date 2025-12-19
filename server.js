@@ -11,15 +11,20 @@ const { setupNotificationWebsocket } = require('./websocket/notificationWebsocke
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+// app.use(cors({
+//   origin: [
+//     process.env.FRONTEND_URL,
+//     process.env.CATALOGUE_URL,
+//     "http://localhost:5173"
+//   ],
+//   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
+//   allowedHeaders: ['Content-Type', 'Authorization'],
+//   exposedHeaders: ['Content-Disposition'], // Expose Content-Disposition for file downloads
+//   credentials: true
+// }));
+
 app.use(cors({
-  origin: [
-    process.env.FRONTEND_URL,
-    process.env.CATALOGUE_URL,
-    "http://localhost:5173"
-  ],
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-  exposedHeaders: ['Content-Disposition'], // Expose Content-Disposition for file downloads
+  origin: true,
   credentials: true
 }));
 
