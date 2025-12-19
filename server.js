@@ -24,23 +24,60 @@ const PORT = process.env.PORT || 5000;
 // }));
 
 const corsOptions = {
-  origin: (process.env.NODE_ENV_BUILD === 'production') 
-    ? [
-        process.env.FRONTEND_URL,
-        process.env.CATALOGUE_URL,
-        'https://uat-stm-portal.stm-asb.co.id',
-        'https://stm-portal.stm-asb.co.id'
-      ].filter(Boolean)
-    : true, // Allow all origins in dev/preprod
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps, Postman, curl)
+    if (!origin) return callback(null, true);
+    
+    const allowedOrigins = [
+      process.env.FRONTEND_URL,
+      process.env.CATALOGUE_URL,
+      'http://localhost:5173',
+      'https://uat-stm-portal.stm-asb.co.id',
+      'https://stm-portal.stm-asb.co.id',
+      'https://be-uat-stm-portal.stm-asb.co.id' // Backend domain (if needed)
+    ].filter(Boolean); // Remove undefined/null values
+    
+    // In development/preprod, allow all origins
+    if (process.env.NODE_ENV_BUILD !== 'production') {
+      console.log(`✅ CORS: Allowing origin ${origin} (non-production mode)`);
+      return callback(null, true);
+    }
+    
+    // In production, check against allowed list
+    if (allowedOrigins.includes(origin)) {
+      console.log(`✅ CORS: Allowing origin ${origin}`);
+      callback(null, true);
+    } else {
+      console.log(`❌ CORS: Blocking origin ${origin}`);
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
   exposedHeaders: ['Content-Disposition'],
   credentials: true,
-  optionsSuccessStatus: 204
+  optionsSuccessStatus: 200, // Some browsers expect 200 instead of 204
+  preflightContinue: false
 };
+
+// Apply CORS middleware BEFORE any routes
 app.use(cors(corsOptions));
-// Explicitly handle OPTIONS requests for all routes
+
+// Explicitly handle OPTIONS requests BEFORE the catch-all 404 handler
 app.options('*', cors(corsOptions));
+
+// Add a manual OPTIONS handler as backup
+app.use((req, res, next) => {
+  if (req.method === 'OPTIONS') {
+    res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+    res.header('Access-Control-Allow-Credentials', 'true');
+    res.header('Access-Control-Max-Age', '86400'); // 24 hours
+    return res.status(200).end();
+  }
+  next();
+});
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -193,6 +230,10 @@ app.use((err, req, res, next) => {
 });
 
 app.use('*', (req, res) => {
+  // Don't interfere with OPTIONS requests
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
   res.status(404).json({
     success: false,
     message: 'Route not found'
