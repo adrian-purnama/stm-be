@@ -29,10 +29,71 @@ const {
   updateLastFollowUpAll,
   generateQuotationNumber,
   formatPrice,
-  migrateOfferNumbers
+  migrateOfferNumbers,
+  cleanupQuotationResources,
+  validateOfferCompleteness
 } = require('../utils/quotationHelper');
 
 const DEFAULT_PAYMENT_TERMS = 'Payment DP 50% sisa cash before delivery';
+
+// ============================================================================
+// HELPER FUNCTION: Convert RFQ items to offer items
+// ============================================================================
+const convertRfqItemsToOfferItems = (rfqItems, rfq) => {
+  if (!rfqItems || !Array.isArray(rfqItems) || rfqItems.length === 0) {
+    return [];
+  }
+  
+  const lineOfBusinessType = rfq.lineOfBusiness?.type || 'karoseri';
+  
+  return rfqItems.map((rfqItem, index) => {
+    const itemEstimatedRevenue = rfqItem.estimatedRevenue || 0;
+    
+    const baseItem = {
+      itemNumber: index + 1,
+      quantity: rfqItem.quantity || 1,
+      price: itemEstimatedRevenue,
+      netto: itemEstimatedRevenue * 0.91,
+      discountType: 'percentage',
+      discountValue: 0,
+      notes: rfqItem.notes || ''
+    };
+    
+    if (lineOfBusinessType === 'karoseri') {
+      return {
+        ...baseItem,
+        karoseri: rfqItem.karoseri || '',
+        chassis: rfqItem.chassis || '',
+        chassisModel: rfqItem.chassisModel || '',
+        drawingSpecification: (rfqItem.drawingSpecification && typeof rfqItem.drawingSpecification === 'object')
+          ? rfqItem.drawingSpecification._id
+          : (rfqItem.drawingSpecification || null),
+        bodyTypeId: rfq.bodyTypeId || rfqItem.bodyTypeId || null,
+        chassisTypeId: rfq.chassisTypeId || rfqItem.chassisTypeId || null,
+        templateMode: rfqItem.templateMode || 'manual',
+        templateSourceModel: rfqItem.templateSourceModel || null,
+        templateSourceId: (rfqItem.templateSourceId && typeof rfqItem.templateSourceId === 'object')
+          ? rfqItem.templateSourceId._id
+          : (rfqItem.templateSourceId || null),
+        specifications: rfqItem.specifications || []
+      };
+    } else if (lineOfBusinessType === 'service') {
+      return {
+        ...baseItem,
+        serviceName: rfqItem.serviceName || '',
+        serviceDetails: rfqItem.serviceDetails || []
+      };
+    } else if (lineOfBusinessType === 'sparepart') {
+      return {
+        ...baseItem,
+        sparepartName: rfqItem.sparepartName || '',
+        pricePerUnit: rfqItem.pricePerUnit || 0
+      };
+    }
+    
+    return baseItem;
+  });
+};
 
 // ============================================================================
 // HELPER MIDDLEWARE: Extract quotation number from path (handles slashes)
@@ -77,6 +138,7 @@ const extractQuotationNumber = (req, res, next) => {
     /^\/(.+)\/progress(\/.*)?$/, // Matches /quotationNumber/progress or /quotationNumber/progress/...
     /^\/(.+)\/follow-up$/,       // Matches /quotationNumber/follow-up
     /^\/(.+)\/track-download$/,  // Matches /quotationNumber/track-download
+    /^\/(.+)\/rebuild$/,         // Matches /quotationNumber/rebuild
     /^\/(.+)$/                   // Matches /quotationNumber (must be last)
   ];
   
@@ -641,7 +703,16 @@ router.post('/', authenticateToken, authorize(['quotation_create']), async (req,
   try {
     const { headerData, offerData, rfqId } = req.body;
     
-    // If rfqId is provided, validate and update RFQ status
+    // Pre-flight checks: Validate before any database writes
+    console.log('[POST /api/quotations] Pre-flight checks starting...');
+    
+    // Check if offerData has items
+    if (!offerData || !offerData.offerItems || offerData.offerItems.length === 0) {
+      console.warn('[POST /api/quotations] Pre-flight check failed: No offer items provided');
+      return sendErrorResponse(res, 400, 'Offer items are required');
+    }
+    
+    // If rfqId is provided, validate and check RFQ status
     if (rfqId) {
       const { RFQ } = require('../models/rfq.model');
       const rfq = await RFQ.findById(rfqId);
@@ -651,13 +722,25 @@ router.post('/', authenticateToken, authorize(['quotation_create']), async (req,
       }
       
       if (rfq.status !== 'approved') {
-        return sendErrorResponse(res, 400, 'RFQ must be approved before creating quotation');
+        return sendErrorResponse(res, 400, `RFQ must be approved before creating quotation. Current status: ${rfq.status}`);
       }
       
       if (rfq.quotationCreatorId.toString() !== req.user.userId.toString()) {
         return sendErrorResponse(res, 403, 'You are not authorized to create quotation for this RFQ');
       }
+      
+      // Check if RFQ already has a quotation
+      if (rfq.quotationId) {
+        const existingQuotation = await QuotationHeader.findById(rfq.quotationId);
+        if (existingQuotation) {
+          return sendErrorResponse(res, 400, `RFQ already has an associated quotation: ${existingQuotation.quotationNumber}`);
+        }
+      }
+      
+      console.log('[POST /api/quotations] Pre-flight checks passed for RFQ:', rfqId);
     }
+    
+    console.log('[POST /api/quotations] Pre-flight checks completed successfully');
     
     // If RFQ was provided, get RFQ data and transfer it to offerData
     if (rfqId) {
@@ -675,54 +758,8 @@ router.post('/', authenticateToken, authorize(['quotation_create']), async (req,
         // Transfer RFQ items to offer items only if frontend didn't send any
         // This allows users to modify values in the form and have them saved
         if ((!offerData.offerItems || offerData.offerItems.length === 0) && rfq.items && rfq.items.length > 0) {
-          const rfqOfferItems = rfq.items.map((rfqItem, index) => {
-            const itemEstimatedRevenue = rfqItem.estimatedRevenue || 0;
-            const lineOfBusinessType = rfq.lineOfBusiness.type;
-            
-            const baseItem = {
-            itemNumber: index + 1,
-              quantity: rfqItem.quantity || 1,
-              price: itemEstimatedRevenue,
-              netto: itemEstimatedRevenue * 0.91,  // Apply 9% discount for netto
-              discountType: 'percentage',
-              discountValue: 0,
-              notes: rfqItem.notes || ''
-            };
-            
-            // Add type-specific fields
-            if (lineOfBusinessType === 'karoseri') {
-              return {
-                ...baseItem,
-                karoseri: rfqItem.karoseri,
-                chassis: rfqItem.chassis,
-                chassisModel: rfqItem.chassisModel || '',
-                drawingSpecification: rfqItem.drawingSpecification,
-                bodyTypeId: rfq.bodyTypeId || rfqItem.bodyTypeId, // Use RFQ-level or item-level
-                chassisTypeId: rfq.chassisTypeId || rfqItem.chassisTypeId, // Use RFQ-level or item-level
-                templateMode: rfqItem.templateMode,
-                templateSourceModel: rfqItem.templateSourceModel,
-                templateSourceId: rfqItem.templateSourceId,
-                specifications: rfqItem.specifications
-              };
-            } else if (lineOfBusinessType === 'service') {
-              return {
-                ...baseItem,
-                serviceName: rfqItem.serviceName || '',
-                serviceDetails: rfqItem.serviceDetails || []
-              };
-            } else if (lineOfBusinessType === 'sparepart') {
-              return {
-                ...baseItem,
-                sparepartName: rfqItem.sparepartName || '',
-                pricePerUnit: rfqItem.pricePerUnit || 0
-              };
-            }
-            
-            return baseItem;
-          });
-          
-          // Only use RFQ items if frontend didn't send any offerItems
-          offerData.offerItems = rfqOfferItems;
+          // Use helper function to convert RFQ items to offer items
+          offerData.offerItems = convertRfqItemsToOfferItems(rfq.items, rfq);
         }
       }
     }
@@ -753,31 +790,84 @@ router.post('/', authenticateToken, authorize(['quotation_create']), async (req,
       }
     }
     
+    // Track created resources for rollback on error
+    const createdResources = {
+      header: null,
+      offer: null,
+      items: []
+    };
+
     // Create quotation header
     const header = await createQuotationHeader({
       ...userFields,
       rfqId: rfqId || null
     });
+    createdResources.header = header;
+    console.log('[POST /api/quotations] Created header:', header._id, header.quotationNumber);
 
-    // Create first offer (now with RFQ data if applicable)
-    const offer = await createQuotationOffer(header.quotationNumber, {
-      ...offerData,
-      requesterId: header.requesterId,
-      approverId: header.approverId,
-      creatorId: header.creatorId,
-      marketingName: header.marketingName
-    });
-
-    // If RFQ was provided, update its status
-    if (rfqId) {
-      const { RFQ } = require('../models/rfq.model');
-      
-      // Update RFQ status and link to quotation
-      await RFQ.findByIdAndUpdate(rfqId, {
-        status: 'quotation_created',
-        quotationId: header._id,
-        quotationCreatedAt: new Date()
+    try {
+      // Create first offer (now with RFQ data if applicable)
+      const offerResult = await createQuotationOffer(header.quotationNumber, {
+        ...offerData,
+        requesterId: header.requesterId,
+        approverId: header.approverId,
+        creatorId: header.creatorId,
+        marketingName: header.marketingName
       });
+      
+      // Extract offer and merge created resources
+      const offer = offerResult.offer || offerResult; // Handle both return formats for backward compatibility
+      createdResources.offer = offer;
+      if (offerResult.createdResources) {
+        createdResources.items = offerResult.createdResources.items || [];
+      }
+      
+      console.log('[POST /api/quotations] Created offer:', offer._id, offer.offerNumber);
+
+      // If RFQ was provided, update its status ONLY after successful offer creation
+      if (rfqId) {
+        const { RFQ } = require('../models/rfq.model');
+        
+        // Update RFQ status and link to quotation
+        await RFQ.findByIdAndUpdate(rfqId, {
+          status: 'quotation_created',
+          quotationId: header._id,
+          quotationCreatedAt: new Date()
+        });
+        console.log('[POST /api/quotations] Updated RFQ status to quotation_created');
+      }
+
+      // Send email notification to requester (quotation created)
+      try {
+        const requester = await User.findById(header.requesterId).select('email fullName');
+        if (requester && requester.email) {
+          sendQuotationNotificationEmail(
+            requester.email,
+            header.quotationNumber,
+            'created',
+            requester.fullName || requester.email
+          );
+        }
+      } catch (emailError) {
+        console.error('Error sending quotation creation email:', emailError);
+        // Don't fail the request if email fails
+      }
+
+      await header.populate({
+        path: 'rfqId',
+        populate: [
+          { path: 'requesterId', select: 'fullName email' },
+          { path: 'approverId', select: 'fullName email' },
+          { path: 'quotationCreatorId', select: 'fullName email' }
+        ]
+      });
+
+      return sendSuccessResponse(res, 201, 'Quotation created successfully', { header, rfq: header.rfqId, offer });
+    } catch (offerError) {
+      // If offer creation fails, cleanup created resources
+      console.error('[POST /api/quotations] Error creating offer, cleaning up resources:', offerError);
+      await cleanupQuotationResources(createdResources);
+      throw offerError; // Re-throw to be caught by outer catch
     }
 
     // Send email notification to requester (quotation created)
@@ -905,22 +995,158 @@ router.get('/*/header', extractQuotationNumber, authenticateToken, authorize(['q
   }
 });
 
+// ============================================================================
+// EMERGENCY DIAGNOSTICS ROUTES (must come before catch-all routes)
+// ============================================================================
+
+// Get emergency diagnostics - find broken quotations and orphaned data
+router.get('/emergency/diagnostics', authenticateToken, authorize(['quotation_view']), async (req, res) => {
+  try {
+    // Get all quotation headers
+    const allHeaders = await QuotationHeader.find({}).lean();
+    
+    // Get all offers
+    const allOffers = await QuotationOffer.find({}).lean();
+    
+    // Get all offer items
+    const allItems = await OfferItem.find({}).lean();
+    
+    // Create sets for quick lookup
+    const headerIds = new Set(allHeaders.map(h => h._id.toString()));
+    const offerIds = new Set(allOffers.map(o => o._id.toString()));
+    
+    // Find orphaned offers (offers with invalid quotationHeaderId)
+    const orphanedOffers = allOffers.filter(offer => {
+      const headerId = offer.quotationHeaderId?.toString();
+      return !headerId || !headerIds.has(headerId);
+    });
+    
+    // Find orphaned items (items with invalid quotationOfferId)
+    const orphanedItems = allItems.filter(item => {
+      const offerId = item.quotationOfferId?.toString();
+      return !offerId || !offerIds.has(offerId);
+    });
+    
+    // Find main issues: quotations with no offers or offers with no items
+    const mainIssues = [];
+    
+    for (const header of allHeaders) {
+      const headerId = header._id.toString();
+      
+      // Find all offers for this header
+      const headerOffers = allOffers.filter(o => 
+        o.quotationHeaderId?.toString() === headerId
+      );
+      
+      if (headerOffers.length === 0) {
+        // Quotation has no offers
+        mainIssues.push({
+          header: header,
+          issueType: 'no_offer',
+          offer: null
+        });
+      } else {
+        // Check each offer for items
+        for (const offer of headerOffers) {
+          const offerId = offer._id.toString();
+          const offerItems = allItems.filter(item => 
+            item.quotationOfferId?.toString() === offerId
+          );
+          
+          if (offerItems.length === 0) {
+            // Offer has no items
+            mainIssues.push({
+              header: header,
+              issueType: 'no_items',
+              offer: offer
+            });
+          }
+        }
+      }
+    }
+    
+    // Get customer name from RFQ if available
+    const RFQ = require('../models/rfq.model');
+    for (const issue of mainIssues) {
+      if (issue.header.rfqId) {
+        try {
+          const rfq = await RFQ.findById(issue.header.rfqId).lean();
+          if (rfq && rfq.customerName && !issue.header.customerName) {
+            issue.header.customerName = rfq.customerName;
+          }
+        } catch (e) {
+          // RFQ not found or error, skip
+        }
+      }
+    }
+    
+    const stats = {
+      totalHeaders: allHeaders.length,
+      totalOffers: allOffers.length,
+      totalOfferItems: allItems.length,
+      mainIssues: mainIssues.length,
+      orphanedItems: orphanedItems.length,
+      orphanedOffers: orphanedOffers.length
+    };
+    
+    return sendSuccessResponse(res, 200, 'Diagnostics retrieved successfully', {
+      stats,
+      issues: {
+        mainIssues,
+        orphanedItems,
+        orphanedOffers
+      }
+    });
+  } catch (error) {
+    console.error('Error getting diagnostics:', error);
+    return sendErrorResponse(res, 500, 'Failed to get diagnostics', error.message);
+  }
+});
+
 // Get specific quotation by quotation number
 // Note: This route must come AFTER more specific routes like /*/header, /*/offers, etc.
 router.get('/*', extractQuotationNumber, authenticateToken, authorize(['quotation_view']), async (req, res) => {
   // Skip if this matches a more specific route
   if (req.path.includes('/header') || req.path.includes('/offers') || req.path.includes('/status') || 
       req.path.includes('/progress') || req.path.includes('/follow-up') || req.path.includes('/track-download') ||
-      req.path.startsWith('/by-id/')) {
+      req.path.includes('/rebuild') || req.path.includes('/emergency') || req.path.includes('/migrate') ||
+      req.path.startsWith('/by-id/') || req.path.startsWith('/generate/')) {
     return res.status(404).json({ success: false, message: 'Route not found' });
   }
   
   try {
     // Extract quotation number from path (handles slashes)
-    const quotationNumber = req.extractedQuotationNumber || req.params[0] || req.params.quotationNumber;
-    const decodedNumber = decodeURIComponent(quotationNumber);
-    const result = await getQuotationOffers(decodedNumber);
-
+    let quotationNumber = req.extractedQuotationNumber || req.params[0] || req.params.quotationNumber;
+    
+    if (!quotationNumber) {
+      return sendErrorResponse(res, 400, 'Quotation number is required');
+    }
+    
+    // Check if quotationNumber is actually a MongoDB ObjectId
+    const isObjectId = /^[0-9a-fA-F]{24}$/.test(quotationNumber);
+    let actualQuotationNumber = quotationNumber;
+    
+    if (isObjectId) {
+      try {
+        const header = await getQuotationHeaderById(quotationNumber);
+        if (header && header.quotationNumber) {
+          actualQuotationNumber = header.quotationNumber;
+        } else {
+          return sendErrorResponse(res, 404, 'Quotation not found');
+        }
+      } catch (error) {
+        return sendErrorResponse(res, 404, 'Quotation not found');
+      }
+    } else {
+      try {
+        actualQuotationNumber = decodeURIComponent(quotationNumber);
+      } catch (e) {
+        // Already decoded or invalid, use as-is
+        actualQuotationNumber = quotationNumber;
+      }
+    }
+    
+    const result = await getQuotationOffers(actualQuotationNumber);
 
     return sendSuccessResponse(res, 200, 'Quotation retrieved successfully', result);
   } catch (error) {
@@ -1859,6 +2085,256 @@ router.post('/migrate/offer-numbers', authenticateToken, authorize('admin'), asy
   } catch (error) {
     console.error('Error migrating offer numbers:', error);
     return sendErrorResponse(res, 400, 'Failed to migrate offer numbers', error.message);
+  }
+});
+
+// ============================================================================
+// EMERGENCY DIAGNOSTICS ROUTES
+// ============================================================================
+
+// Rebuild broken quotation
+router.post('/*/rebuild', extractQuotationNumber, authenticateToken, authorize(['quotation_edit']), async (req, res) => {
+  try {
+    // Extract quotation number from path (handles slashes)
+    let quotationNumber = req.extractedQuotationNumber;
+    
+    // Fallback: extract from path if middleware didn't set it
+    if (!quotationNumber) {
+      const pathMatch = req.path.match(/^\/(.+)\/rebuild$/);
+      if (pathMatch) {
+        quotationNumber = pathMatch[1];
+        try {
+          quotationNumber = decodeURIComponent(quotationNumber);
+        } catch (e) {
+          // Already decoded or invalid, use as-is
+        }
+      }
+    }
+    
+    if (!quotationNumber) {
+      return sendErrorResponse(res, 400, 'Quotation number is required');
+    }
+    
+    // Check if quotationNumber is actually a MongoDB ObjectId
+    const isObjectId = /^[0-9a-fA-F]{24}$/.test(quotationNumber);
+    let actualQuotationNumber = quotationNumber;
+    
+    if (isObjectId) {
+      try {
+        const header = await getQuotationHeaderById(quotationNumber);
+        if (header && header.quotationNumber) {
+          actualQuotationNumber = header.quotationNumber;
+        } else {
+          return sendErrorResponse(res, 404, 'Quotation not found');
+        }
+      } catch (error) {
+        return sendErrorResponse(res, 404, 'Quotation not found');
+      }
+    }
+    
+    // Find the quotation header
+    const header = await QuotationHeader.findOne({ quotationNumber: actualQuotationNumber });
+    if (!header) {
+      return sendErrorResponse(res, 404, 'Quotation not found');
+    }
+    
+    // Convert header to plain object before deletion to preserve all data
+    const headerData = header.toObject();
+    
+    // Get RFQ if exists
+    const { RFQ } = require('../models/rfq.model');
+    let rfq = null;
+    if (headerData.rfqId) {
+      rfq = await RFQ.findById(headerData.rfqId);
+      if (!rfq) {
+        return sendErrorResponse(res, 404, 'Associated RFQ not found');
+      }
+    }
+    
+    // Store original quotation number to preserve it
+    const preservedQuotationNumber = actualQuotationNumber;
+    
+    // Step 1: Completely remove the bad quotation (items, offers, header)
+    console.log('[Rebuild] Step 1: Deleting existing quotation data...');
+    const offers = await QuotationOffer.find({ quotationHeaderId: header._id });
+    const offerIds = offers.map(o => o._id);
+    
+    // Delete all items first
+    await OfferItem.deleteMany({ quotationOfferId: { $in: offerIds } });
+    console.log('[Rebuild] Deleted', offerIds.length, 'offer items');
+    
+    // Delete all offers
+    await QuotationOffer.deleteMany({ quotationHeaderId: header._id });
+    console.log('[Rebuild] Deleted', offers.length, 'offers');
+    
+    // Delete header
+    await QuotationHeader.findByIdAndDelete(header._id);
+    console.log('[Rebuild] Deleted quotation header');
+    
+    // Step 2: Rollback RFQ status to 'approved' if RFQ exists
+    // This ensures we can rebuild from a clean state
+    if (rfq) {
+      console.log('[Rebuild] Step 2: Rolling back RFQ status from', rfq.status, 'to approved...');
+      rfq.status = 'approved';
+      await rfq.save();
+      console.log('[Rebuild] RFQ status rolled back to approved');
+    }
+    
+    // Rebuild quotation header with preserved number
+    // Prepare header data with preserved quotation number
+    const newHeaderData = {
+      quotationNumber: preservedQuotationNumber,
+      requesterId: headerData.requesterId,
+      approverId: headerData.approverId,
+      creatorId: headerData.creatorId,
+      marketingName: headerData.marketingName,
+      rfqId: headerData.rfqId || null,
+      customerName: headerData.customerName || '',
+      contactPerson: headerData.contactPerson || {},
+      lineOfBusiness: headerData.lineOfBusiness || { type: 'karoseri' },
+      deliveryTerms: headerData.deliveryTerms || '',
+      deliveryNotes: headerData.deliveryNotes || '',
+      targetCloseDate: headerData.targetCloseDate || null,
+      paymentTerms: headerData.paymentTerms || '',
+      inclusionNotes: headerData.inclusionNotes || '',
+      exclusionNotes: headerData.exclusionNotes || '',
+      isTaxIncluded: headerData.isTaxIncluded || false,
+      includePPN: headerData.includePPN || false,
+      lastFollowUpDate: new Date() // Set initial follow-up date
+    };
+    
+    // Track created resources for rollback on error
+    const createdResources = {
+      header: null,
+      offer: null,
+      items: []
+    };
+    
+    // Create new header with preserved number
+    const newHeader = new QuotationHeader(newHeaderData);
+    await newHeader.save();
+    createdResources.header = newHeader;
+    console.log('[Rebuild] Created header:', newHeader._id, newHeader.quotationNumber);
+    
+    // Step 3: Rebuild quotation from RFQ (now in 'approved' status)
+    // This follows the same flow as creating a new quotation from an approved RFQ
+    if (rfq) {
+      try {
+        // Verify RFQ is in 'approved' status before rebuilding
+        if (rfq.status !== 'approved') {
+          console.warn('[Rebuild] RFQ status is', rfq.status, 'but expected approved. Rolling back...');
+          rfq.status = 'approved';
+          await rfq.save();
+        }
+        
+        console.log('[Rebuild] Step 3: Rebuilding quotation from RFQ (status:', rfq.status, ')...');
+        
+        // Refresh RFQ to ensure we have the latest data after status change
+        const refreshedRfq = await RFQ.findById(rfq._id);
+        if (!refreshedRfq) {
+          throw new Error('RFQ not found after refresh');
+        }
+        console.log('[Rebuild] Refreshed RFQ, status:', refreshedRfq.status);
+        
+        // Get RFQ items - they're stored in rfq.items array (populated)
+        const rfqWithItems = await RFQ.findById(refreshedRfq._id).populate({
+          path: 'items',
+          populate: [
+            { path: 'drawingSpecification' },
+            { path: 'templateSourceId' }
+          ]
+        });
+        
+        const rfqItems = rfqWithItems?.items || [];
+        console.log('[Rebuild] Found', rfqItems.length, 'RFQ items');
+        
+        if (rfqItems.length > 0) {
+          // Use helper function to convert RFQ items to offer items
+          const offerItems = convertRfqItemsToOfferItems(rfqItems, refreshedRfq);
+          console.log('[Rebuild] Converted to', offerItems.length, 'offer items');
+          
+          // Create initial offer
+          const offerData = {
+            offerItems,
+            excludePPN: headerData.includePPN ? false : true,
+            notes: '',
+            notesImages: []
+          };
+          
+          console.log('[Rebuild] Creating quotation offer...');
+          console.log('[Rebuild] Quotation number:', preservedQuotationNumber);
+          console.log('[Rebuild] Offer data keys:', Object.keys(offerData));
+          console.log('[Rebuild] Offer items count:', offerData.offerItems?.length || 0);
+          
+          // Verify header exists before creating offer
+          const verifyHeader = await QuotationHeader.findOne({ quotationNumber: preservedQuotationNumber });
+          if (!verifyHeader) {
+            throw new Error(`Quotation header not found after creation. Number: ${preservedQuotationNumber}`);
+          }
+          console.log('[Rebuild] Verified header exists:', verifyHeader._id);
+          
+          const offerResult = await createQuotationOffer(preservedQuotationNumber, {
+            ...offerData,
+            requesterId: headerData.requesterId,
+            approverId: headerData.approverId,
+            creatorId: headerData.creatorId,
+            marketingName: headerData.marketingName
+          });
+          
+          // Extract offer and merge created resources
+          const offer = offerResult.offer || offerResult;
+          createdResources.offer = offer;
+          if (offerResult.createdResources) {
+            createdResources.items = offerResult.createdResources.items || [];
+          }
+          
+          console.log('[Rebuild] Quotation offer created successfully:', offer._id);
+        } else {
+          console.log('[Rebuild] RFQ has no items, skipping offer creation');
+        }
+        
+        // Step 4: Update RFQ status back to 'quotation_created' after successful rebuild
+        console.log('[Rebuild] Step 4: Updating RFQ status to quotation_created...');
+        rfq.status = 'quotation_created';
+        await rfq.save();
+        console.log('[Rebuild] RFQ status updated to quotation_created');
+      } catch (rfqError) {
+        console.error('[Rebuild] Error processing RFQ items:', rfqError);
+        
+        // Cleanup created resources (header, offer, items)
+        console.log('[Rebuild] Cleaning up created resources due to error');
+        await cleanupQuotationResources(createdResources);
+        
+        // If rebuild fails, try to rollback RFQ status to 'approved' to prevent inconsistent state
+        if (rfq) {
+          try {
+            rfq.status = 'approved';
+            await rfq.save();
+            console.log('[Rebuild] Rolled back RFQ status to approved due to error');
+          } catch (rollbackError) {
+            console.error('[Rebuild] Failed to rollback RFQ status:', rollbackError);
+          }
+        }
+        
+        // Re-throw error to be caught by outer catch
+        throw rfqError;
+      }
+    } else {
+      console.log('[Rebuild] No RFQ associated, skipping offer creation');
+    }
+    
+    return sendSuccessResponse(res, 200, 'Quotation rebuilt successfully', {
+      quotationNumber: preservedQuotationNumber
+    });
+  } catch (error) {
+    console.error('[Rebuild] Error rebuilding quotation:', error);
+    // Resources are already cleaned up in the inner try-catch if offer creation failed
+    // But if header creation failed, we need to check if anything was created
+    if (createdResources.header && !createdResources.offer) {
+      console.log('[Rebuild] Cleaning up header that was created before error');
+      await cleanupQuotationResources(createdResources);
+    }
+    return sendErrorResponse(res, 500, 'Failed to rebuild quotation', error.message);
   }
 });
 

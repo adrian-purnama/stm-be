@@ -2,6 +2,19 @@ const QuotationHeader = require('../models/quotationHeader.model');
 const QuotationOffer = require('../models/quotationOffer.model');
 const OfferItem = require('../models/offerItem.model');
 
+// Helper function to add timeout to promises
+const withTimeout = (promise, timeoutMs, fallback) => {
+  return Promise.race([
+    promise,
+    new Promise((resolve) => 
+      setTimeout(() => {
+        console.warn(`[withTimeout] Promise timed out after ${timeoutMs}ms, using fallback`);
+        resolve(fallback);
+      }, timeoutMs)
+    )
+  ]);
+};
+
 // Generate quotation number
 const generateQuotationNumber = async () => {
   const now = new Date();
@@ -64,24 +77,32 @@ const generateOfferNumber = async (quotationNumber, isRevision = false, parentOf
     throw new Error(`Failed to generate unique offer number after ${MAX_RETRIES} attempts`);
   }
 
+  console.log(`[generateOfferNumber] Generating offer number for quotation: ${quotationNumber}, isRevision: ${isRevision}, retryCount: ${retryCount}`);
+  
   // Find quotation header
   const header = await QuotationHeader.findOne({ quotationNumber });
   if (!header) {
+    console.error(`[generateOfferNumber] Quotation header not found for: ${quotationNumber}`);
     throw new Error('Quotation header not found');
   }
+  console.log(`[generateOfferNumber] Found header: ${header._id}`);
 
   if (isRevision && parentOfferId) {
     // For revisions, use the same offer number as parent but with revision suffix
+    console.log(`[generateOfferNumber] Processing revision for parentOfferId: ${parentOfferId}`);
     const parentOffer = await QuotationOffer.findById(parentOfferId);
     if (!parentOffer) {
       throw new Error('Parent offer not found');
     }
     
+    console.log(`[generateOfferNumber] Found parent offer: ${parentOffer.offerNumber}, offerNumberInQuotation: ${parentOffer.offerNumberInQuotation}`);
+    
     // Extract the base offer number (without revision suffix)
     const baseOfferNumber = parentOffer.offerNumber.split('-Rev')[0];
     
     // Find the highest revision number for this offer using aggregation for atomicity
-    const revisionResult = await QuotationOffer.aggregate([
+    console.log(`[generateOfferNumber] Finding highest revision for offerNumberInQuotation: ${parentOffer.offerNumberInQuotation}`);
+    const revisionAggregationPromise = QuotationOffer.aggregate([
       {
         $match: {
           quotationHeaderId: header._id,
@@ -97,15 +118,28 @@ const generateOfferNumber = async (quotationNumber, isRevision = false, parentOf
       }
     ]);
     
+    const revisionResult = await withTimeout(
+      revisionAggregationPromise,
+      5000, // 5 second timeout
+      [] // fallback to empty array if timeout
+    );
+    
+    console.log(`[generateOfferNumber] Revision aggregation result:`, JSON.stringify(revisionResult));
+    
     let revision = 1;
     if (revisionResult.length > 0 && revisionResult[0].maxRevision) {
       revision = revisionResult[0].maxRevision + 1;
+      console.log(`[generateOfferNumber] Found max revision: ${revisionResult[0].maxRevision}, using next revision: ${revision}`);
+    } else {
+      console.log(`[generateOfferNumber] No existing revisions found, using revision: ${revision}`);
     }
     
     const offerNumber = `${baseOfferNumber}-Rev${revision}`;
+    console.log(`[generateOfferNumber] Calculated revision offer number: ${offerNumber}`);
     
     // Double-check that this revision number doesn't already exist
     // Check both by offerNumber string and by revision number to be safe
+    console.log(`[generateOfferNumber] Checking for existing revision offer...`);
     const existingOffer = await QuotationOffer.findOne({
       $or: [
         { offerNumber },
@@ -118,16 +152,69 @@ const generateOfferNumber = async (quotationNumber, isRevision = false, parentOf
     });
     
     if (existingOffer) {
+      console.warn(`[generateOfferNumber] Found existing revision offer that conflicts!`, {
+        existingOfferId: existingOffer._id,
+        existingOfferNumber: existingOffer.offerNumber,
+        existingRevision: existingOffer.revision,
+        calculatedOfferNumber: offerNumber,
+        calculatedRevision: revision,
+        retryCount: retryCount + 1
+      });
       // Add a small delay to allow database to catch up, then recursively retry
       await new Promise(resolve => setTimeout(resolve, 50 * (retryCount + 1)));
       return await generateOfferNumber(quotationNumber, isRevision, parentOfferId, retryCount + 1);
     }
     
+    console.log(`[generateOfferNumber] No existing revision offer found, returning: ${offerNumber}, offerNumberInQuotation: ${parentOffer.offerNumberInQuotation}`);
     return { offerNumber, offerNumberInQuotation: parentOffer.offerNumberInQuotation };
   } else {
     // For new offers, find the next offer number in quotation
+    
+    // Pre-check: If no offers exist, skip aggregation and return 1 directly
+    // This optimizes the common rebuild case where we know there are no offers
+    console.log(`[generateOfferNumber] Checking if any offers exist for header: ${header._id}`);
+    const offerCount = await QuotationOffer.countDocuments({ 
+      quotationHeaderId: header._id,
+      revision: 0 
+    });
+    
+    if (offerCount === 0) {
+      console.log(`[generateOfferNumber] No offers found (count: ${offerCount}), trying to use offerNumberInQuotation = 1`);
+      // Try starting from 1, but if it exists (for any reason), increment until we find an available number
+      let nextOfferNumberInQuotation = 1;
+      let nextOfferNumber = `${quotationNumber}-${nextOfferNumberInQuotation}`;
+      
+      // Keep incrementing until we find a number that doesn't exist globally
+      // This handles cases where orphaned offers exist from previous failed rebuilds
+      while (nextOfferNumberInQuotation < 100) { // Safety limit
+        const existingOffer = await QuotationOffer.findOne({ offerNumber: nextOfferNumber });
+        if (!existingOffer) {
+          // Number is available, use it
+          console.log(`[generateOfferNumber] Found available offer number: ${nextOfferNumber}, offerNumberInQuotation: ${nextOfferNumberInQuotation}`);
+          return { offerNumber: nextOfferNumber, offerNumberInQuotation: nextOfferNumberInQuotation };
+        }
+        
+        // Check if it belongs to this header (which would be weird since count is 0, but handle it)
+        if (existingOffer.quotationHeaderId.toString() === header._id.toString()) {
+          console.warn(`[generateOfferNumber] Found existing offer ${nextOfferNumber} for this header even though count was 0. Incrementing...`);
+        } else {
+          console.warn(`[generateOfferNumber] Found orphaned offer ${nextOfferNumber} belonging to different header (${existingOffer.quotationHeaderId}). Incrementing...`);
+        }
+        
+        // Number is taken, try next
+        nextOfferNumberInQuotation++;
+        nextOfferNumber = `${quotationNumber}-${nextOfferNumberInQuotation}`;
+      }
+      
+      // If we've exhausted all numbers (shouldn't happen), throw error
+      throw new Error(`Failed to find available offer number after checking up to ${nextOfferNumberInQuotation}`);
+    }
+    
+    console.log(`[generateOfferNumber] Found ${offerCount} existing offers, running aggregation...`);
+    
     // Use aggregation to get the max offerNumberInQuotation atomically
-    const result = await QuotationOffer.aggregate([
+    // Wrap with timeout to prevent hanging
+    const aggregationPromise = QuotationOffer.aggregate([
       {
         $match: {
           quotationHeaderId: header._id,
@@ -142,18 +229,32 @@ const generateOfferNumber = async (quotationNumber, isRevision = false, parentOf
       }
     ]);
     
+    console.log(`[generateOfferNumber] Starting aggregation query...`);
+    const result = await withTimeout(
+      aggregationPromise,
+      5000, // 5 second timeout
+      [] // fallback to empty array if timeout
+    );
+    
+    console.log(`[generateOfferNumber] Aggregation result:`, JSON.stringify(result));
+    
     // Find the highest offer number in quotation
     let highestOfferNumberInQuotation = 0;
     if (result.length > 0 && result[0].maxOfferNumber) {
       highestOfferNumberInQuotation = result[0].maxOfferNumber;
+      console.log(`[generateOfferNumber] Highest offerNumberInQuotation found: ${highestOfferNumberInQuotation}`);
+    } else {
+      console.log(`[generateOfferNumber] No max offer number found in aggregation result, using 0`);
     }
 
     const nextOfferNumberInQuotation = highestOfferNumberInQuotation + 1;
     const offerNumber = `${quotationNumber}-${nextOfferNumberInQuotation}`;
     
+    console.log(`[generateOfferNumber] Calculated next offer number: ${offerNumber}, offerNumberInQuotation: ${nextOfferNumberInQuotation}`);
     
     // Double-check that this offerNumberInQuotation doesn't already exist (race condition protection)
     // Check both by offerNumber string and by offerNumberInQuotation to be safe
+    console.log(`[generateOfferNumber] Checking for existing offer with offerNumber: ${offerNumber} or offerNumberInQuotation: ${nextOfferNumberInQuotation}`);
     const existingOffer = await QuotationOffer.findOne({
       $or: [
         { offerNumber },
@@ -166,11 +267,20 @@ const generateOfferNumber = async (quotationNumber, isRevision = false, parentOf
     });
     
     if (existingOffer) {
+      console.warn(`[generateOfferNumber] Found existing offer that conflicts!`, {
+        existingOfferId: existingOffer._id,
+        existingOfferNumber: existingOffer.offerNumber,
+        existingOfferNumberInQuotation: existingOffer.offerNumberInQuotation,
+        calculatedOfferNumber: offerNumber,
+        calculatedOfferNumberInQuotation: nextOfferNumberInQuotation,
+        retryCount: retryCount + 1
+      });
       // Add a small delay to allow database to catch up, then recursively retry
       await new Promise(resolve => setTimeout(resolve, 50 * (retryCount + 1)));
       return await generateOfferNumber(quotationNumber, isRevision, parentOfferId, retryCount + 1);
     }
     
+    console.log(`[generateOfferNumber] No existing offer found, returning: ${offerNumber}, offerNumberInQuotation: ${nextOfferNumberInQuotation}`);
     return { offerNumber, offerNumberInQuotation: nextOfferNumberInQuotation };
   }
 };
@@ -287,15 +397,19 @@ const createQuotationHeader = async (headerData) => {
 // Create quotation offer
 const createQuotationOffer = async (quotationNumber, offerData) => {
   try {
+    console.log('[createQuotationOffer] Starting for quotation:', quotationNumber);
     // Format data before saving
     const formattedData = formatDataForStorage(offerData);
-
+    console.log('[createQuotationOffer] Formatted data keys:', Object.keys(formattedData));
 
     // Find quotation header
+    console.log('[createQuotationOffer] Looking for header with quotationNumber:', quotationNumber);
     const header = await QuotationHeader.findOne({ quotationNumber });
     if (!header) {
+      console.error('[createQuotationOffer] Header not found for:', quotationNumber);
       throw new Error(`Quotation header not found for quotation number: ${quotationNumber}`);
     }
+    console.log('[createQuotationOffer] Found header:', header._id);
 
     // Handle revision logic
     let revision = 0;
@@ -426,46 +540,160 @@ const createQuotationOffer = async (quotationNumber, offerData) => {
       }
     }
 
-    // Create offer items if provided
+    // Track created resources for potential rollback
+    const createdResources = {
+      offer: offer,
+      items: []
+    };
+
+    // Create offer items if provided - use Promise.allSettled for atomic-like creation
     if (offerItems.length > 0) {
-      console.log('Backend: Creating', offerItems.length, 'offer items');
-      for (let i = 0; i < offerItems.length; i++) {
-        const itemData = offerItems[i];
-        console.log('Backend: Processing offer item', i + 1, ':', itemData);
-        const formattedItemData = formatDataForStorage(itemData);
-        
-        // Remove _id and other fields that shouldn't be copied for new items
-        delete formattedItemData._id;
-        delete formattedItemData.createdAt;
-        delete formattedItemData.updatedAt;
-        delete formattedItemData.__v;
-        delete formattedItemData.quotationOfferId; // Will be set to new offer ID
-        
-        console.log('Backend: Formatted item data:', formattedItemData);
-        
-        const offerItem = new OfferItem({
-          ...formattedItemData,
-          quotationOfferId: offer._id,
-          itemNumber: i + 1
+      console.log('[createQuotationOffer] Creating', offerItems.length, 'offer items atomically');
+      
+      // Create all items in parallel using Promise.allSettled
+      const itemPromises = offerItems.map((itemData, index) => {
+        return (async () => {
+          console.log('[createQuotationOffer] Processing offer item', index + 1, 'of', offerItems.length);
+          const formattedItemData = formatDataForStorage(itemData);
+          
+          // Remove _id and other fields that shouldn't be copied for new items
+          delete formattedItemData._id;
+          delete formattedItemData.createdAt;
+          delete formattedItemData.updatedAt;
+          delete formattedItemData.__v;
+          delete formattedItemData.quotationOfferId; // Will be set to new offer ID
+          
+          const offerItem = new OfferItem({
+            ...formattedItemData,
+            quotationOfferId: offer._id,
+            itemNumber: index + 1
+          });
+          
+          const savedItem = await offerItem.save();
+          console.log('[createQuotationOffer] Offer item', index + 1, 'saved successfully');
+          return savedItem;
+        })();
+      });
+
+      // Wait for all items to be created (or fail)
+      const results = await Promise.allSettled(itemPromises);
+      
+      // Check for failures
+      const failures = results.filter(r => r.status === 'rejected');
+      if (failures.length > 0) {
+        console.error('[createQuotationOffer] Failed to create', failures.length, 'items out of', offerItems.length);
+        failures.forEach((failure, index) => {
+          console.error('[createQuotationOffer] Item failure', index + 1, ':', failure.reason);
         });
         
-        console.log('Backend: Saving offer item:', offerItem);
-        await offerItem.save();
-        console.log('Backend: Offer item saved successfully');
+        // Collect successfully created items for cleanup
+        results.forEach((result, index) => {
+          if (result.status === 'fulfilled') {
+            createdResources.items.push(result.value);
+          }
+        });
+        
+        throw new Error(`Failed to create ${failures.length} out of ${offerItems.length} offer items`);
       }
+      
+      // All items created successfully - collect them
+      results.forEach((result) => {
+        if (result.status === 'fulfilled') {
+          createdResources.items.push(result.value);
+        }
+      });
+      
+      console.log('[createQuotationOffer] All', offerItems.length, 'items created successfully');
+      
+      // Validate completeness
+      await validateOfferCompleteness(offer._id, offerItems.length);
       
       // Update offer totals
       await offer.save();
-      console.log('Backend: Offer totals updated');
+      console.log('[createQuotationOffer] Offer totals updated');
     } else {
-      console.log('Backend: No offer items to create');
+      console.log('[createQuotationOffer] No offer items to create');
     }
 
-    return offer;
+    // Return offer with createdResources for caller to track
+    return { offer, createdResources };
   } catch (error) {
     console.error('Error creating quotation offer:', error);
     throw error;
   }
+};
+
+// Cleanup quotation resources (header, offers, items) - used for rollback
+const cleanupQuotationResources = async (createdResources) => {
+  if (!createdResources) {
+    return;
+  }
+
+  console.log('[cleanupQuotationResources] Starting cleanup...', {
+    hasOffer: !!createdResources.offer,
+    itemsCount: createdResources.items?.length || 0,
+    hasHeader: !!createdResources.header
+  });
+
+  try {
+    // Delete items first (in reverse order)
+    if (createdResources.items && createdResources.items.length > 0) {
+      const itemIds = createdResources.items.map(item => item._id || item);
+      console.log('[cleanupQuotationResources] Deleting', itemIds.length, 'items');
+      await OfferItem.deleteMany({ _id: { $in: itemIds } });
+      console.log('[cleanupQuotationResources] Deleted items');
+    }
+
+    // Delete offer
+    if (createdResources.offer) {
+      const offerId = createdResources.offer._id || createdResources.offer;
+      console.log('[cleanupQuotationResources] Deleting offer:', offerId);
+      await QuotationOffer.findByIdAndDelete(offerId);
+      console.log('[cleanupQuotationResources] Deleted offer');
+    }
+
+    // Delete header (last, as it's the parent)
+    if (createdResources.header) {
+      const headerId = createdResources.header._id || createdResources.header;
+      console.log('[cleanupQuotationResources] Deleting header:', headerId);
+      await QuotationHeader.findByIdAndDelete(headerId);
+      console.log('[cleanupQuotationResources] Deleted header');
+    }
+
+    console.log('[cleanupQuotationResources] Cleanup completed successfully');
+  } catch (cleanupError) {
+    // Log but don't throw - we want cleanup to be best-effort
+    console.error('[cleanupQuotationResources] Error during cleanup:', cleanupError);
+    console.error('[cleanupQuotationResources] Partial cleanup may have occurred');
+  }
+};
+
+// Validate that all offer items were created successfully
+const validateOfferCompleteness = async (offerId, expectedItemCount) => {
+  if (expectedItemCount === 0) {
+    return; // No items expected, skip validation
+  }
+
+  console.log('[validateOfferCompleteness] Validating offer completeness...', {
+    offerId,
+    expectedItemCount
+  });
+
+  const actualItemCount = await OfferItem.countDocuments({ quotationOfferId: offerId });
+  
+  if (actualItemCount !== expectedItemCount) {
+    console.error('[validateOfferCompleteness] Validation failed!', {
+      offerId,
+      expectedItemCount,
+      actualItemCount
+    });
+    throw new Error(`Offer completeness validation failed: expected ${expectedItemCount} items, found ${actualItemCount}`);
+  }
+
+  console.log('[validateOfferCompleteness] Validation passed:', {
+    offerId,
+    itemCount: actualItemCount
+  });
 };
 
 // Get quotation header by ID
@@ -1267,5 +1495,7 @@ module.exports = {
   updateLastFollowUp,
   updateLastFollowUpAll,
   migrateOfferNumbers,
-  getQuotationAnalysis
+  getQuotationAnalysis,
+  cleanupQuotationResources,
+  validateOfferCompleteness
 };
