@@ -24,14 +24,23 @@ const PORT = process.env.PORT || 5000;
 // }));
 
 const corsOptions = {
-  origin: '*',
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  origin: (process.env.NODE_ENV_BUILD === 'production') 
+    ? [
+        process.env.FRONTEND_URL,
+        process.env.CATALOGUE_URL,
+        'https://uat-stm-portal.stm-asb.co.id',
+        'https://stm-portal.stm-asb.co.id'
+      ].filter(Boolean)
+    : true, // Allow all origins in dev/preprod
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  exposedHeaders: ['Content-Disposition'],
+  credentials: true,
+  optionsSuccessStatus: 204
 };
-
 app.use(cors(corsOptions));
+// Explicitly handle OPTIONS requests for all routes
 app.options('*', cors(corsOptions));
-
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
