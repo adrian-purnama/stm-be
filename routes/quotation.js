@@ -41,12 +41,35 @@ const DEFAULT_PAYMENT_TERMS = 'Payment DP 50% sisa cash before delivery';
 // by extracting them from the request path before route matching
 const extractQuotationNumber = (req, res, next) => {
   // Extract quotation number from the path
-  // req.path is relative to the router mount point (/api/quotations)
-  // So for /api/quotations/41/QUO/STM/XII/2025/offers, req.path is /41/QUO/STM/XII/2025/offers
-  const path = req.path;
+  // Use req.originalUrl to get the full encoded path, then extract the part after /api/quotations
+  const originalUrl = req.originalUrl.split('?')[0]; // Remove query string
+  const pathMatch = originalUrl.match(/\/api\/quotations(\/.+)$/);
+  
+  if (!pathMatch) {
+    return next();
+  }
+  
+  let path = pathMatch[1]; // Get path after /api/quotations (e.g., /35%2FQUO%2FSTM%2FXII%2F2025/offers)
+  
+  // Manually decode %2F (encoded slashes) since Express doesn't do this by default for security
+  // This is safe because we're only decoding within our controlled route context
+  try {
+    // Replace %2F with a temporary marker, decode everything else, then restore slashes
+    path = path.replace(/%2F/g, '___SLASH___');
+    path = decodeURIComponent(path);
+    path = path.replace(/___SLASH___/g, '/');
+  } catch (e) {
+    // If decoding fails, try direct decode (might work for some cases)
+    try {
+      path = decodeURIComponent(path);
+    } catch (e2) {
+      // If that also fails, use path as-is
+      console.warn('Failed to decode path:', pathMatch[1], e2);
+    }
+  }
   
   // Patterns that match paths with quotation numbers containing slashes
-  // Match paths like: /41/QUO/STM/XII/2025/offers, /41/QUO/STM/XII/2025/header, etc.
+  // Match paths like: /35/QUO/STM/XII/2025/offers, /35/QUO/STM/XII/2025/header, etc.
   const patterns = [
     /^\/(.+)\/offers(\/.*)?$/,  // Matches /quotationNumber/offers or /quotationNumber/offers/...
     /^\/(.+)\/header$/,          // Matches /quotationNumber/header
@@ -62,14 +85,6 @@ const extractQuotationNumber = (req, res, next) => {
     if (match) {
       // Extract the quotation number part (everything before the suffix)
       let quotationNumber = match[1];
-      
-      // Decode URL encoding (%2F becomes /)
-      try {
-        quotationNumber = decodeURIComponent(quotationNumber);
-      } catch (e) {
-        // If decoding fails, use as-is
-        console.warn('Failed to decode quotation number:', quotationNumber, e);
-      }
       
       // Store in req for routes to use
       req.extractedQuotationNumber = quotationNumber;
