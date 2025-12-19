@@ -35,6 +35,52 @@ const {
 const DEFAULT_PAYMENT_TERMS = 'Payment DP 50% sisa cash before delivery';
 
 // ============================================================================
+// HELPER MIDDLEWARE: Extract quotation number from path (handles slashes)
+// ============================================================================
+// This middleware reconstructs quotation numbers that contain slashes
+// by extracting them from the request path before route matching
+const extractQuotationNumber = (req, res, next) => {
+  // Extract quotation number from the path
+  // req.path is relative to the router mount point (/api/quotations)
+  // So for /api/quotations/41/QUO/STM/XII/2025/offers, req.path is /41/QUO/STM/XII/2025/offers
+  const path = req.path;
+  
+  // Patterns that match paths with quotation numbers containing slashes
+  // Match paths like: /41/QUO/STM/XII/2025/offers, /41/QUO/STM/XII/2025/header, etc.
+  const patterns = [
+    /^\/(.+)\/offers(\/.*)?$/,  // Matches /quotationNumber/offers or /quotationNumber/offers/...
+    /^\/(.+)\/header$/,          // Matches /quotationNumber/header
+    /^\/(.+)\/status$/,          // Matches /quotationNumber/status
+    /^\/(.+)\/progress(\/.*)?$/, // Matches /quotationNumber/progress or /quotationNumber/progress/...
+    /^\/(.+)\/follow-up$/,       // Matches /quotationNumber/follow-up
+    /^\/(.+)\/track-download$/,  // Matches /quotationNumber/track-download
+    /^\/(.+)$/                   // Matches /quotationNumber (must be last)
+  ];
+  
+  for (const pattern of patterns) {
+    const match = path.match(pattern);
+    if (match) {
+      // Extract the quotation number part (everything before the suffix)
+      let quotationNumber = match[1];
+      
+      // Decode URL encoding (%2F becomes /)
+      try {
+        quotationNumber = decodeURIComponent(quotationNumber);
+      } catch (e) {
+        // If decoding fails, use as-is
+        console.warn('Failed to decode quotation number:', quotationNumber, e);
+      }
+      
+      // Store in req for routes to use
+      req.extractedQuotationNumber = quotationNumber;
+      break;
+    }
+  }
+  
+  next();
+};
+
+// ============================================================================
 // QUOTATION MANAGEMENT ROUTES
 // ============================================================================
 
@@ -1048,10 +1094,12 @@ router.patch('/:quotationNumber/status', authenticateToken, authorize(['quotatio
 // ============================================================================
 
 // Get all offers for a quotation
-router.get('/:quotationNumber/offers', authenticateToken, authorize(['quotation_view']), async (req, res) => {
+router.get('/*/offers', extractQuotationNumber, authenticateToken, authorize(['quotation_view']), async (req, res) => {
   try {
-    const { quotationNumber } = req.params;
-    const result = await getQuotationOffers(quotationNumber);
+    // Extract quotation number from path (handles slashes in quotation number)
+    const quotationNumber = req.extractedQuotationNumber || req.params[0]?.split('/offers')[0] || req.params.quotationNumber;
+    const decodedNumber = decodeURIComponent(quotationNumber);
+    const result = await getQuotationOffers(decodedNumber);
 
 
     return sendSuccessResponse(res, 200, 'Offers retrieved successfully', result.offers);
@@ -1062,9 +1110,11 @@ router.get('/:quotationNumber/offers', authenticateToken, authorize(['quotation_
 });
 
 // Create new offer for a quotation
-router.post('/:quotationId/offers', authenticateToken, authorize(['quotation_edit']), async (req, res) => {
+router.post('/*/offers', extractQuotationNumber, authenticateToken, authorize(['quotation_edit']), async (req, res) => {
   try {
-    const { quotationId } = req.params;
+    // Extract quotation ID/number from path (handles slashes)
+    const quotationId = req.extractedQuotationNumber || req.params[0]?.split('/offers')[0] || req.params.quotationId;
+    const decodedId = decodeURIComponent(quotationId);
     const offerData = req.body;
 
     // Find the quotation header by ID or quotationNumber
@@ -1097,19 +1147,22 @@ router.post('/:quotationId/offers', authenticateToken, authorize(['quotation_edi
 });
 
 // Update specific offer
-router.put('/:quotationId/offers/:offerId', authenticateToken, authorize(['quotation_edit']), async (req, res) => {
+router.put('/*/offers/:offerId', extractQuotationNumber, authenticateToken, authorize(['quotation_edit']), async (req, res) => {
   try {
-    const { quotationId, offerId } = req.params;
+    // Extract quotation ID/number from path (handles slashes)
+    const quotationId = req.extractedQuotationNumber || req.params[0]?.split('/offers')[0] || req.params.quotationId;
+    const decodedId = decodeURIComponent(quotationId);
+    const { offerId } = req.params;
     const updateData = req.body;
 
     // Find the quotation header by ID or quotationNumber
     let header;
     try {
       // First try to find by ObjectId
-      header = await getQuotationHeaderById(quotationId);
+      header = await getQuotationHeaderById(decodedId);
     } catch (error) {
       // If that fails, try to find by quotationNumber
-      header = await QuotationHeader.findOne({ quotationNumber: quotationId });
+      header = await QuotationHeader.findOne({ quotationNumber: decodedId });
     }
     
     if (!header) {
@@ -1126,18 +1179,21 @@ router.put('/:quotationId/offers/:offerId', authenticateToken, authorize(['quota
 });
 
 // Delete specific offer
-router.delete('/:quotationId/offers/:offerId', authenticateToken, authorize(['quotation_edit']), async (req, res) => {
+router.delete('/*/offers/:offerId', extractQuotationNumber, authenticateToken, authorize(['quotation_edit']), async (req, res) => {
   try {
-    const { quotationId, offerId } = req.params;
+    // Extract quotation ID/number from path (handles slashes)
+    const quotationId = req.extractedQuotationNumber || req.params[0]?.split('/offers')[0] || req.params.quotationId;
+    const decodedId = decodeURIComponent(quotationId);
+    const { offerId } = req.params;
 
     // Find the quotation header by ID or quotationNumber
     let header;
     try {
       // First try to find by ObjectId
-      header = await getQuotationHeaderById(quotationId);
+      header = await getQuotationHeaderById(decodedId);
     } catch (error) {
       // If that fails, try to find by quotationNumber
-      header = await QuotationHeader.findOne({ quotationNumber: quotationId });
+      header = await QuotationHeader.findOne({ quotationNumber: decodedId });
     }
     
     if (!header) {
@@ -1168,11 +1224,14 @@ router.delete('/:quotationId/offers/:offerId', authenticateToken, authorize(['qu
 // ============================================================================
 
 // Get all items for a specific offer
-router.get('/:quotationNumber/offers/:offerId/items', authenticateToken, authorize(['quotation_view']), async (req, res) => {
+router.get('/*/offers/:offerId/items', extractQuotationNumber, authenticateToken, authorize(['quotation_view']), async (req, res) => {
   try {
-    const { quotationNumber, offerId } = req.params;
+    // Extract quotation number from path (handles slashes)
+    const quotationNumber = req.extractedQuotationNumber || req.params[0]?.split('/offers')[0] || req.params.quotationNumber;
+    const decodedNumber = decodeURIComponent(quotationNumber);
+    const { offerId } = req.params;
 
-    const result = await getQuotationOffers(quotationNumber);
+    const result = await getQuotationOffers(decodedNumber);
 
 
     const items = await OfferItem.find({ quotationOfferId: offerId })
@@ -1186,12 +1245,15 @@ router.get('/:quotationNumber/offers/:offerId/items', authenticateToken, authori
 });
 
 // Create new item for a specific offer
-router.post('/:quotationNumber/offers/:offerId/items', authenticateToken, authorize(['quotation_edit']), async (req, res) => {
+router.post('/*/offers/:offerId/items', extractQuotationNumber, authenticateToken, authorize(['quotation_edit']), async (req, res) => {
   try {
-    const { quotationNumber, offerId } = req.params;
+    // Extract quotation number from path (handles slashes)
+    const quotationNumber = req.extractedQuotationNumber || req.params[0]?.split('/offers')[0] || req.params.quotationNumber;
+    const decodedNumber = decodeURIComponent(quotationNumber);
+    const { offerId } = req.params;
     const itemData = req.body;
 
-    const result = await getQuotationOffers(quotationNumber);
+    const result = await getQuotationOffers(decodedNumber);
 
 
     // Get the next item number
@@ -1223,12 +1285,15 @@ router.post('/:quotationNumber/offers/:offerId/items', authenticateToken, author
 });
 
 // Update specific offer item
-router.put('/:quotationNumber/offers/:offerId/items/:itemId', authenticateToken, authorize(['quotation_edit']), async (req, res) => {
+router.put('/*/offers/:offerId/items/:itemId', extractQuotationNumber, authenticateToken, authorize(['quotation_edit']), async (req, res) => {
   try {
-    const { quotationNumber, offerId, itemId } = req.params;
+    // Extract quotation number from path (handles slashes)
+    const quotationNumber = req.extractedQuotationNumber || req.params[0]?.split('/offers')[0] || req.params.quotationNumber;
+    const decodedNumber = decodeURIComponent(quotationNumber);
+    const { offerId, itemId } = req.params;
     const updateData = req.body;
 
-    const result = await getQuotationOffers(quotationNumber);
+    const result = await getQuotationOffers(decodedNumber);
 
 
     // Handle empty string for drawingSpecification
@@ -1261,11 +1326,14 @@ router.put('/:quotationNumber/offers/:offerId/items/:itemId', authenticateToken,
 });
 
 // Delete specific offer item
-router.delete('/:quotationNumber/offers/:offerId/items/:itemId', authenticateToken, authorize(['quotation_edit']), async (req, res) => {
+router.delete('/*/offers/:offerId/items/:itemId', extractQuotationNumber, authenticateToken, authorize(['quotation_edit']), async (req, res) => {
   try {
-    const { quotationNumber, offerId, itemId } = req.params;
+    // Extract quotation number from path (handles slashes)
+    const quotationNumber = req.extractedQuotationNumber || req.params[0]?.split('/offers')[0] || req.params.quotationNumber;
+    const decodedNumber = decodeURIComponent(quotationNumber);
+    const { offerId, itemId } = req.params;
 
-    const result = await getQuotationOffers(quotationNumber);
+    const result = await getQuotationOffers(decodedNumber);
 
     const offerItem = await OfferItem.findByIdAndDelete(itemId);
 
@@ -1287,11 +1355,14 @@ router.delete('/:quotationNumber/offers/:offerId/items/:itemId', authenticateTok
 });
 
 // Toggle item acceptance status
-router.patch('/:quotationNumber/offers/:offerId/items/:itemId/accept', authenticateToken, authorize(['quotation_edit']), async (req, res) => {
+router.patch('/*/offers/:offerId/items/:itemId/accept', extractQuotationNumber, authenticateToken, authorize(['quotation_edit']), async (req, res) => {
   try {
-    const { quotationNumber, offerId, itemId } = req.params;
+    // Extract quotation number from path (handles slashes)
+    const quotationNumber = req.extractedQuotationNumber || req.params[0]?.split('/offers')[0] || req.params.quotationNumber;
+    const decodedNumber = decodeURIComponent(quotationNumber);
+    const { offerId, itemId } = req.params;
 
-    const result = await getQuotationOffers(quotationNumber);
+    const result = await getQuotationOffers(decodedNumber);
 
 
     const offerItem = await OfferItem.findById(itemId);
