@@ -847,13 +847,15 @@ router.get('/by-id/:quotationId', authenticateToken, authorize(['quotation_view'
 });
 
 // Get full header details for a quotation (with populated fields) - for async loading
-router.get('/:quotationNumber/header', authenticateToken, authorize(['quotation_view']), async (req, res) => {
+router.get('/*/header', extractQuotationNumber, authenticateToken, authorize(['quotation_view']), async (req, res) => {
   try {
-    const { quotationNumber } = req.params;
+    // Extract quotation number from path (handles slashes)
+    const quotationNumber = req.extractedQuotationNumber || req.params[0]?.split('/header')[0] || req.params.quotationNumber;
+    const decodedNumber = decodeURIComponent(quotationNumber);
     const { getFollowUpStatus } = require('../utils/quotationHelper');
     const QuotationHeader = require('../models/quotationHeader.model');
     
-    const header = await QuotationHeader.findOne({ quotationNumber })
+    const header = await QuotationHeader.findOne({ quotationNumber: decodedNumber })
       .populate('requesterId', 'fullName email')
       .populate('approverId', 'fullName email')
       .populate('creatorId', 'fullName email')
@@ -904,10 +906,20 @@ router.get('/:quotationNumber/header', authenticateToken, authorize(['quotation_
 });
 
 // Get specific quotation by quotation number
-router.get('/:quotationNumber', authenticateToken, authorize(['quotation_view']), async (req, res) => {
+// Note: This route must come AFTER more specific routes like /*/header, /*/offers, etc.
+router.get('/*', extractQuotationNumber, authenticateToken, authorize(['quotation_view']), async (req, res) => {
+  // Skip if this matches a more specific route
+  if (req.path.includes('/header') || req.path.includes('/offers') || req.path.includes('/status') || 
+      req.path.includes('/progress') || req.path.includes('/follow-up') || req.path.includes('/track-download') ||
+      req.path.startsWith('/by-id/')) {
+    return res.status(404).json({ success: false, message: 'Route not found' });
+  }
+  
   try {
-    const { quotationNumber } = req.params;
-    const result = await getQuotationOffers(quotationNumber);
+    // Extract quotation number from path (handles slashes)
+    const quotationNumber = req.extractedQuotationNumber || req.params[0] || req.params.quotationNumber;
+    const decodedNumber = decodeURIComponent(quotationNumber);
+    const result = await getQuotationOffers(decodedNumber);
 
 
     return sendSuccessResponse(res, 200, 'Quotation retrieved successfully', result);
@@ -918,12 +930,19 @@ router.get('/:quotationNumber', authenticateToken, authorize(['quotation_view'])
 });
 
 // Update quotation header
-router.put('/:quotationNumber', authenticateToken, authorize(['quotation_edit']), async (req, res) => {
+router.put('/*', extractQuotationNumber, authenticateToken, authorize(['quotation_edit']), async (req, res, next) => {
+  // Skip if this matches a more specific route
+  if (req.path.includes('/offers') || req.path.includes('/progress')) {
+    return next();
+  }
+  
   try {
-    const { quotationNumber } = req.params;
+    // Extract quotation number from path (handles slashes)
+    const quotationNumber = req.extractedQuotationNumber || req.params[0] || req.params.quotationNumber;
+    const decodedNumber = decodeURIComponent(quotationNumber);
     const updateData = req.body;
 
-    const result = await getQuotationOffers(quotationNumber);
+    const result = await getQuotationOffers(decodedNumber);
 
     const updatedHeader = await updateQuotationHeader(result.header._id, updateData);
 
@@ -935,10 +954,17 @@ router.put('/:quotationNumber', authenticateToken, authorize(['quotation_edit'])
 });
 
 // Delete quotation (header + all offers + all items)
-router.delete('/:quotationNumber', authenticateToken, authorize(['quotation_delete']), async (req, res) => {
+router.delete('/*', extractQuotationNumber, authenticateToken, authorize(['quotation_delete']), async (req, res, next) => {
+  // Skip if this matches a more specific route (like /offers/:offerId)
+  if (req.path.includes('/offers/') || req.path.includes('/progress/')) {
+    return next();
+  }
+  
   try {
-    const { quotationNumber } = req.params;
-    const result = await getQuotationOffers(quotationNumber);
+    // Extract quotation number from path (handles slashes)
+    const quotationNumber = req.extractedQuotationNumber || req.params[0] || req.params.quotationNumber;
+    const decodedNumber = decodeURIComponent(quotationNumber);
+    const result = await getQuotationOffers(decodedNumber);
 
     // Collect all offer IDs for cleanup
     const offerIds = [];
@@ -983,9 +1009,59 @@ const ROMAN_MONTHS = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X
 const isValidRomanMonth = (value) => ROMAN_MONTHS.includes((value || '').toUpperCase());
 
 // Update quotation status
-router.patch('/:quotationNumber/status', authenticateToken, authorize(['quotation_edit']), async (req, res) => {
+router.patch('/*/status', extractQuotationNumber, authenticateToken, authorize(['quotation_edit']), async (req, res) => {
   try {
-    const { quotationNumber } = req.params;
+    // Extract quotation number from path (handles slashes)
+    // The middleware already decoded it, so use it directly
+    let quotationNumber = req.extractedQuotationNumber;
+    
+    // Fallback: extract from path if middleware didn't set it
+    if (!quotationNumber) {
+      // Try to extract from req.path (decoded path)
+      const pathMatch = req.path.match(/^\/(.+)\/status$/);
+      if (pathMatch) {
+        quotationNumber = pathMatch[1];
+        console.log('[Status Update] Extracted from path:', quotationNumber);
+      } else {
+        // Try to extract from originalUrl (encoded path)
+        const originalPathMatch = req.originalUrl.match(/\/api\/quotations\/(.+)\/status/);
+        if (originalPathMatch) {
+          let encodedNumber = originalPathMatch[1];
+          // Decode %2F to /
+          try {
+            encodedNumber = encodedNumber.replace(/%2F/g, '___SLASH___');
+            encodedNumber = decodeURIComponent(encodedNumber);
+            encodedNumber = encodedNumber.replace(/___SLASH___/g, '/');
+            quotationNumber = encodedNumber;
+          } catch (e) {
+            quotationNumber = originalPathMatch[1];
+          }
+        }
+      }
+    }
+    
+    if (!quotationNumber) {
+      return sendErrorResponse(res, 400, 'Quotation number is required');
+    }
+    
+    // Check if quotationNumber is actually a MongoDB ObjectId (24 hex characters)
+    // If so, we need to get the quotation header first to get the actual quotation number
+    const isObjectId = /^[0-9a-fA-F]{24}$/.test(quotationNumber);
+    let actualQuotationNumber = quotationNumber;
+    
+    if (isObjectId) {
+      try {
+        const header = await getQuotationHeaderById(quotationNumber);
+        if (header && header.quotationNumber) {
+          actualQuotationNumber = header.quotationNumber;
+        } else {
+          return sendErrorResponse(res, 404, 'Quotation not found');
+        }
+      } catch (error) {
+        return sendErrorResponse(res, 404, 'Quotation not found');
+      }
+    }
+    
     const {
       status,
       reason,
@@ -1001,7 +1077,7 @@ router.patch('/:quotationNumber/status', authenticateToken, authorize(['quotatio
       spkYear
     } = req.body;
 
-    const result = await getQuotationOffers(quotationNumber);
+    const result = await getQuotationOffers(actualQuotationNumber);
 
 
     // Validate reason for loss/close
@@ -1416,12 +1492,14 @@ router.patch('/*/offers/:offerId/items/:itemId/accept', extractQuotationNumber, 
 // ============================================================================
 
 // Add progress entry to quotation
-router.post('/:quotationNumber/progress', authenticateToken, authorize(['quotation_edit']), async (req, res) => {
+router.post('/*/progress', extractQuotationNumber, authenticateToken, authorize(['quotation_edit']), async (req, res) => {
   try {
-    const { quotationNumber } = req.params;
+    // Extract quotation number from path (handles slashes)
+    const quotationNumber = req.extractedQuotationNumber || req.params[0]?.split('/progress')[0] || req.params.quotationNumber;
+    const decodedNumber = decodeURIComponent(quotationNumber);
     const { progress } = req.body;
 
-    const result = await getQuotationOffers(quotationNumber);
+    const result = await getQuotationOffers(decodedNumber);
 
     const updatedHeader = await updateQuotationHeader(result.header._id, {
       $push: { progress: progress }
@@ -1435,16 +1513,19 @@ router.post('/:quotationNumber/progress', authenticateToken, authorize(['quotati
 });
 
 // Delete progress entry from quotation
-router.delete('/:quotationNumber/progress/:index', authenticateToken, authorize(['quotation_edit']), async (req, res) => {
+router.delete('/*/progress/:index', extractQuotationNumber, authenticateToken, authorize(['quotation_edit']), async (req, res) => {
   try {
-    const { quotationNumber, index } = req.params;
+    // Extract quotation number from path (handles slashes)
+    const quotationNumber = req.extractedQuotationNumber || req.params[0]?.split('/progress')[0] || req.params.quotationNumber;
+    const decodedNumber = decodeURIComponent(quotationNumber);
+    const { index } = req.params;
     const progressIndex = parseInt(index, 10);
 
     if (Number.isNaN(progressIndex) || progressIndex < 0) {
       return sendErrorResponse(res, 400, 'Invalid progress index');
     }
 
-    const result = await getQuotationOffers(quotationNumber);
+    const result = await getQuotationOffers(decodedNumber);
     const currentProgress = Array.isArray(result.header.progress) ? [...result.header.progress] : [];
 
     if (progressIndex >= currentProgress.length) {
@@ -1468,9 +1549,12 @@ router.delete('/:quotationNumber/progress/:index', authenticateToken, authorize(
 });
 
 // Update progress entry
-router.put('/:quotationNumber/progress/:index', authenticateToken, authorize(['quotation_edit']), async (req, res) => {
+router.put('/*/progress/:index', extractQuotationNumber, authenticateToken, authorize(['quotation_edit']), async (req, res) => {
   try {
-    const { quotationNumber, index } = req.params;
+    // Extract quotation number from path (handles slashes)
+    const quotationNumber = req.extractedQuotationNumber || req.params[0]?.split('/progress')[0] || req.params.quotationNumber;
+    const decodedNumber = decodeURIComponent(quotationNumber);
+    const { index } = req.params;
     const { progress } = req.body;
     const progressIndex = parseInt(index, 10);
     const trimmedProgress = (progress ?? '').toString().trim();
@@ -1483,7 +1567,7 @@ router.put('/:quotationNumber/progress/:index', authenticateToken, authorize(['q
       return sendErrorResponse(res, 400, 'Progress text is required');
     }
 
-    const result = await getQuotationOffers(quotationNumber);
+    const result = await getQuotationOffers(decodedNumber);
     const currentProgress = Array.isArray(result.header.progress) ? [...result.header.progress] : [];
 
     if (progressIndex >= currentProgress.length) {
@@ -1525,12 +1609,14 @@ router.patch('/:quotationNumber/follow-up', authenticateToken, authorize(['quota
 });
 
 // Track quotation download
-router.patch('/:quotationNumber/track-download', authenticateToken, async (req, res) => {
+router.patch('/*/track-download', extractQuotationNumber, authenticateToken, async (req, res) => {
   try {
-    const { quotationNumber } = req.params;
+    // Extract quotation number from path (handles slashes)
+    const quotationNumber = req.extractedQuotationNumber || req.params[0]?.split('/track-download')[0] || req.params.quotationNumber;
+    const decodedNumber = decodeURIComponent(quotationNumber);
     const userId = req.user.userId;
 
-    const result = await getQuotationOffers(quotationNumber);
+    const result = await getQuotationOffers(decodedNumber);
 
     // Add download entry
     const updatedHeader = await updateQuotationHeader(result.header._id, {
