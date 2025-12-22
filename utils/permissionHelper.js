@@ -95,10 +95,21 @@ const isSuperAdmin = (user) => {
   return user.permissions.some(p => p.name === 'super_admin');
 };
 
+const hasAllQuotationAccess = (user) => {
+  if (!user || !user.permissions || !Array.isArray(user.permissions)) {
+    return false;
+  }
+
+  return hasPermission(user, 'all_quotation_viewer') || 
+         hasAnyPermission(user, ['quotation_admin', 'admin', 'system_admin']) ||
+         isSuperAdmin(user);
+};
+
 module.exports = {
   hasPermission,
   hasAnyPermission,
   hasAllPermissions,
   getAllUserPermissions,
-  isSuperAdmin
+  isSuperAdmin,
+  hasAllQuotationAccess
 };

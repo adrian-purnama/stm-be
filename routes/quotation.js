@@ -12,7 +12,7 @@ const QuotationOffer = require('../models/quotationOffer.model');
 const OfferItem = require('../models/offerItem.model');
 const User = require('../models/user.model');
 const { sendQuotationNotificationEmail } = require('../utils/emailUtils');
-const { hasPermission, hasAnyPermission, getAllUserPermissions } = require('../utils/permissionHelper');
+const { hasPermission, hasAnyPermission, getAllUserPermissions, hasAllQuotationAccess } = require('../utils/permissionHelper');
 const { sendSuccessResponse, sendErrorResponse } = require('../utils/errorHandler');
 const {
   createQuotationHeader,
@@ -162,7 +162,20 @@ const extractQuotationNumber = (req, res, next) => {
 // ============================================================================
 
 // Get all quotations for the authenticated user
-router.get('/', authenticateToken, authorize(['quotation_view']), async (req, res) => {
+router.get('/', authenticateToken, async (req, res) => {
+  // Check permissions: allow quotation_view or all_quotation_viewer
+  const user = await require('../models/user.model').findById(req.user.userId).populate('permissions');
+  if (!user) {
+    return sendErrorResponse(res, 404, 'User not found');
+  }
+  
+  const hasAllAccess = hasAllQuotationAccess(user);
+  const canView = hasPermission(user, 'quotation_view');
+  
+  if (!hasAllAccess && !canView) {
+    return sendErrorResponse(res, 403, 'Insufficient permissions. Requires quotation_view or all_quotation_viewer permission.');
+  }
+  
   try {
     const rawFilters = { ...req.query };
     const search = rawFilters.search || '';
@@ -545,11 +558,25 @@ router.get('/all', authenticateToken, authorize(['all_quotation_viewer']), async
 });
 
 // Debug endpoint to check offer items (only available in development)
-router.get('/debug/offer-items', authenticateToken, authorize(['quotation_view']), async (req, res) => {
+router.get('/debug/offer-items', authenticateToken, async (req, res) => {
   // Gate debug endpoint behind development flag
   if (process.env.NODE_ENV_BUILD === 'production') {
     return sendErrorResponse(res, 404, 'Debug endpoint not available in production');
   }
+  
+  // Check permissions: allow quotation_view or all_quotation_viewer
+  const user = await require('../models/user.model').findById(req.user.userId).populate('permissions');
+  if (!user) {
+    return sendErrorResponse(res, 404, 'User not found');
+  }
+  
+  const hasAllAccess = hasAllQuotationAccess(user);
+  const canView = hasPermission(user, 'quotation_view');
+  
+  if (!hasAllAccess && !canView) {
+    return sendErrorResponse(res, 403, 'Insufficient permissions. Requires quotation_view or all_quotation_viewer permission.');
+  }
+  
   try {
     const { quotationNumber } = req.query;
     
@@ -699,7 +726,20 @@ router.get('/debug/offer-items', authenticateToken, authorize(['quotation_view']
  * Permission: quotation_create
  * Description: Create a new quotation
  */
-router.post('/', authenticateToken, authorize(['quotation_create']), async (req, res) => {
+router.post('/', authenticateToken, async (req, res) => {
+  // Check permissions: allow quotation_create or all_quotation_viewer
+  const user = await require('../models/user.model').findById(req.user.userId).populate('permissions');
+  if (!user) {
+    return sendErrorResponse(res, 404, 'User not found');
+  }
+  
+  const hasAllAccess = hasAllQuotationAccess(user);
+  const canCreate = hasPermission(user, 'quotation_create');
+  
+  if (!hasAllAccess && !canCreate) {
+    return sendErrorResponse(res, 403, 'Insufficient permissions. Requires quotation_create or all_quotation_viewer permission.');
+  }
+  
   try {
     const { headerData, offerData, rfqId } = req.body;
     
@@ -903,7 +943,20 @@ router.post('/', authenticateToken, authorize(['quotation_create']), async (req,
 });
 
 // Get specific quotation by ID
-router.get('/by-id/:quotationId', authenticateToken, authorize(['quotation_view']), async (req, res) => {
+router.get('/by-id/:quotationId', authenticateToken, async (req, res) => {
+  // Check permissions: allow quotation_view or all_quotation_viewer
+  const user = await require('../models/user.model').findById(req.user.userId).populate('permissions');
+  if (!user) {
+    return sendErrorResponse(res, 404, 'User not found');
+  }
+  
+  const hasAllAccess = hasAllQuotationAccess(user);
+  const canView = hasPermission(user, 'quotation_view');
+  
+  if (!hasAllAccess && !canView) {
+    return sendErrorResponse(res, 403, 'Insufficient permissions. Requires quotation_view or all_quotation_viewer permission.');
+  }
+  
   try {
     const { quotationId } = req.params;
     
@@ -937,7 +990,20 @@ router.get('/by-id/:quotationId', authenticateToken, authorize(['quotation_view'
 });
 
 // Get full header details for a quotation (with populated fields) - for async loading
-router.get('/*/header', extractQuotationNumber, authenticateToken, authorize(['quotation_view']), async (req, res) => {
+router.get('/*/header', extractQuotationNumber, authenticateToken, async (req, res) => {
+  // Check permissions: allow quotation_view or all_quotation_viewer
+  const user = await require('../models/user.model').findById(req.user.userId).populate('permissions');
+  if (!user) {
+    return sendErrorResponse(res, 404, 'User not found');
+  }
+  
+  const hasAllAccess = hasAllQuotationAccess(user);
+  const canView = hasPermission(user, 'quotation_view');
+  
+  if (!hasAllAccess && !canView) {
+    return sendErrorResponse(res, 403, 'Insufficient permissions. Requires quotation_view or all_quotation_viewer permission.');
+  }
+  
   try {
     // Extract quotation number from path (handles slashes)
     const quotationNumber = req.extractedQuotationNumber || req.params[0]?.split('/header')[0] || req.params.quotationNumber;
@@ -1000,7 +1066,20 @@ router.get('/*/header', extractQuotationNumber, authenticateToken, authorize(['q
 // ============================================================================
 
 // Get emergency diagnostics - find broken quotations and orphaned data
-router.get('/emergency/diagnostics', authenticateToken, authorize(['quotation_view']), async (req, res) => {
+router.get('/emergency/diagnostics', authenticateToken, async (req, res) => {
+  // Check permissions: allow quotation_view or all_quotation_viewer
+  const user = await require('../models/user.model').findById(req.user.userId).populate('permissions');
+  if (!user) {
+    return sendErrorResponse(res, 404, 'User not found');
+  }
+  
+  const hasAllAccess = hasAllQuotationAccess(user);
+  const canView = hasPermission(user, 'quotation_view');
+  
+  if (!hasAllAccess && !canView) {
+    return sendErrorResponse(res, 403, 'Insufficient permissions. Requires quotation_view or all_quotation_viewer permission.');
+  }
+  
   try {
     // Get all quotation headers
     const allHeaders = await QuotationHeader.find({}).lean();
@@ -1114,7 +1193,20 @@ router.get('/emergency/diagnostics', authenticateToken, authorize(['quotation_vi
  *   - selectedNotes: JSON array of selected note indices
  * Note: This route must come BEFORE the catch-all route to ensure it's matched first
  */
-router.get('/:id/download', authenticateToken, authorize(['quotation_view']), async (req, res) => {
+router.get('/:id/download', authenticateToken, async (req, res) => {
+  // Check permissions: allow quotation_view or all_quotation_viewer
+  const user = await require('../models/user.model').findById(req.user.userId).populate('permissions');
+  if (!user) {
+    return sendErrorResponse(res, 404, 'User not found');
+  }
+  
+  const hasAllAccess = hasAllQuotationAccess(user);
+  const canView = hasPermission(user, 'quotation_view');
+  
+  if (!hasAllAccess && !canView) {
+    return sendErrorResponse(res, 403, 'Insufficient permissions. Requires quotation_view or all_quotation_viewer permission.');
+  }
+  
   try {
     const { id } = req.params;
     const { offerId, includeHeaderFooter, format = 'docx' } = req.query; // Optional: specific offer ID, header/footer flag, and format
@@ -1356,7 +1448,7 @@ router.get('/:id/download', authenticateToken, authorize(['quotation_view']), as
 
 // Get specific quotation by quotation number
 // Note: This route must come AFTER more specific routes like /*/header, /*/offers, etc.
-router.get('/*', extractQuotationNumber, authenticateToken, authorize(['quotation_view']), async (req, res) => {
+router.get('/*', extractQuotationNumber, authenticateToken, async (req, res) => {
   // Skip if this matches a more specific route or analysis routes
   if (req.path.includes('/header') || req.path.includes('/offers') || req.path.includes('/status') || 
       req.path.includes('/progress') || req.path.includes('/follow-up') || req.path.includes('/track-download') ||
@@ -1364,6 +1456,19 @@ router.get('/*', extractQuotationNumber, authenticateToken, authorize(['quotatio
       req.path.includes('/download') ||
       req.path.startsWith('/by-id/') || req.path.startsWith('/generate/') || req.path.startsWith('/analysis')) {
     return res.status(404).json({ success: false, message: 'Route not found' });
+  }
+  
+  // Check permissions: allow quotation_view or all_quotation_viewer
+  const user = await require('../models/user.model').findById(req.user.userId).populate('permissions');
+  if (!user) {
+    return sendErrorResponse(res, 404, 'User not found');
+  }
+  
+  const hasAllAccess = hasAllQuotationAccess(user);
+  const canView = hasPermission(user, 'quotation_view');
+  
+  if (!hasAllAccess && !canView) {
+    return sendErrorResponse(res, 403, 'Insufficient permissions. Requires quotation_view or all_quotation_viewer permission.');
   }
   
   try {
@@ -1419,10 +1524,23 @@ router.get('/*', extractQuotationNumber, authenticateToken, authorize(['quotatio
 });
 
 // Update quotation header
-router.put('/*', extractQuotationNumber, authenticateToken, authorize(['quotation_edit']), async (req, res, next) => {
+router.put('/*', extractQuotationNumber, authenticateToken, async (req, res, next) => {
   // Skip if this matches a more specific route
   if (req.path.includes('/offers') || req.path.includes('/progress')) {
     return next();
+  }
+  
+  // Check permissions: allow quotation_edit or all_quotation_viewer
+  const user = await require('../models/user.model').findById(req.user.userId).populate('permissions');
+  if (!user) {
+    return sendErrorResponse(res, 404, 'User not found');
+  }
+  
+  const hasAllAccess = hasAllQuotationAccess(user);
+  const canEdit = hasPermission(user, 'quotation_edit');
+  
+  if (!hasAllAccess && !canEdit) {
+    return sendErrorResponse(res, 403, 'Insufficient permissions. Requires quotation_edit or all_quotation_viewer permission.');
   }
   
   try {
@@ -1443,10 +1561,23 @@ router.put('/*', extractQuotationNumber, authenticateToken, authorize(['quotatio
 });
 
 // Delete quotation (header + all offers + all items)
-router.delete('/*', extractQuotationNumber, authenticateToken, authorize(['quotation_delete']), async (req, res, next) => {
+router.delete('/*', extractQuotationNumber, authenticateToken, async (req, res, next) => {
   // Skip if this matches a more specific route (like /offers/:offerId)
   if (req.path.includes('/offers/') || req.path.includes('/progress/')) {
     return next();
+  }
+  
+  // Check permissions: allow quotation_delete or all_quotation_viewer
+  const user = await require('../models/user.model').findById(req.user.userId).populate('permissions');
+  if (!user) {
+    return sendErrorResponse(res, 404, 'User not found');
+  }
+  
+  const hasAllAccess = hasAllQuotationAccess(user);
+  const canDelete = hasPermission(user, 'quotation_delete');
+  
+  if (!hasAllAccess && !canDelete) {
+    return sendErrorResponse(res, 403, 'Insufficient permissions. Requires quotation_delete or all_quotation_viewer permission.');
   }
   
   try {
@@ -1498,7 +1629,20 @@ const ROMAN_MONTHS = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X
 const isValidRomanMonth = (value) => ROMAN_MONTHS.includes((value || '').toUpperCase());
 
 // Update quotation status
-router.patch('/*/status', extractQuotationNumber, authenticateToken, authorize(['quotation_edit']), async (req, res) => {
+router.patch('/*/status', extractQuotationNumber, authenticateToken, async (req, res) => {
+  // Check permissions: allow quotation_edit or all_quotation_viewer
+  const user = await require('../models/user.model').findById(req.user.userId).populate('permissions');
+  if (!user) {
+    return sendErrorResponse(res, 404, 'User not found');
+  }
+  
+  const hasAllAccess = hasAllQuotationAccess(user);
+  const canEdit = hasPermission(user, 'quotation_edit');
+  
+  if (!hasAllAccess && !canEdit) {
+    return sendErrorResponse(res, 403, 'Insufficient permissions. Requires quotation_edit or all_quotation_viewer permission.');
+  }
+  
   try {
     // Extract quotation number from path (handles slashes)
     // The middleware already decoded it, so use it directly
@@ -1674,7 +1818,20 @@ router.patch('/*/status', extractQuotationNumber, authenticateToken, authorize([
 // ============================================================================
 
 // Get all offers for a quotation
-router.get('/*/offers', extractQuotationNumber, authenticateToken, authorize(['quotation_view']), async (req, res) => {
+router.get('/*/offers', extractQuotationNumber, authenticateToken, async (req, res) => {
+  // Check permissions: allow quotation_view or all_quotation_viewer
+  const user = await require('../models/user.model').findById(req.user.userId).populate('permissions');
+  if (!user) {
+    return sendErrorResponse(res, 404, 'User not found');
+  }
+  
+  const hasAllAccess = hasAllQuotationAccess(user);
+  const canView = hasPermission(user, 'quotation_view');
+  
+  if (!hasAllAccess && !canView) {
+    return sendErrorResponse(res, 403, 'Insufficient permissions. Requires quotation_view or all_quotation_viewer permission.');
+  }
+  
   try {
     // Extract quotation number from path (handles slashes in quotation number)
     const quotationNumber = req.extractedQuotationNumber || req.params[0]?.split('/offers')[0] || req.params.quotationNumber;
@@ -1690,7 +1847,20 @@ router.get('/*/offers', extractQuotationNumber, authenticateToken, authorize(['q
 });
 
 // Create new offer for a quotation
-router.post('/*/offers', extractQuotationNumber, authenticateToken, authorize(['quotation_edit']), async (req, res) => {
+router.post('/*/offers', extractQuotationNumber, authenticateToken, async (req, res) => {
+  // Check permissions: allow quotation_edit or all_quotation_viewer
+  const user = await require('../models/user.model').findById(req.user.userId).populate('permissions');
+  if (!user) {
+    return sendErrorResponse(res, 404, 'User not found');
+  }
+  
+  const hasAllAccess = hasAllQuotationAccess(user);
+  const canEdit = hasPermission(user, 'quotation_edit');
+  
+  if (!hasAllAccess && !canEdit) {
+    return sendErrorResponse(res, 403, 'Insufficient permissions. Requires quotation_edit or all_quotation_viewer permission.');
+  }
+  
   try {
     // Extract quotation ID/number from path (handles slashes)
     const quotationId = req.extractedQuotationNumber || req.params[0]?.split('/offers')[0] || req.params.quotationId;
@@ -1727,7 +1897,20 @@ router.post('/*/offers', extractQuotationNumber, authenticateToken, authorize(['
 });
 
 // Update specific offer
-router.put('/*/offers/:offerId', extractQuotationNumber, authenticateToken, authorize(['quotation_edit']), async (req, res) => {
+router.put('/*/offers/:offerId', extractQuotationNumber, authenticateToken, async (req, res) => {
+  // Check permissions: allow quotation_edit or all_quotation_viewer
+  const user = await require('../models/user.model').findById(req.user.userId).populate('permissions');
+  if (!user) {
+    return sendErrorResponse(res, 404, 'User not found');
+  }
+  
+  const hasAllAccess = hasAllQuotationAccess(user);
+  const canEdit = hasPermission(user, 'quotation_edit');
+  
+  if (!hasAllAccess && !canEdit) {
+    return sendErrorResponse(res, 403, 'Insufficient permissions. Requires quotation_edit or all_quotation_viewer permission.');
+  }
+  
   try {
     // Extract quotation ID/number from path (handles slashes)
     const quotationId = req.extractedQuotationNumber || req.params[0]?.split('/offers')[0] || req.params.quotationId;
@@ -1759,7 +1942,20 @@ router.put('/*/offers/:offerId', extractQuotationNumber, authenticateToken, auth
 });
 
 // Delete specific offer
-router.delete('/*/offers/:offerId', extractQuotationNumber, authenticateToken, authorize(['quotation_edit']), async (req, res) => {
+router.delete('/*/offers/:offerId', extractQuotationNumber, authenticateToken, async (req, res) => {
+  // Check permissions: allow quotation_edit or all_quotation_viewer
+  const user = await require('../models/user.model').findById(req.user.userId).populate('permissions');
+  if (!user) {
+    return sendErrorResponse(res, 404, 'User not found');
+  }
+  
+  const hasAllAccess = hasAllQuotationAccess(user);
+  const canEdit = hasPermission(user, 'quotation_edit');
+  
+  if (!hasAllAccess && !canEdit) {
+    return sendErrorResponse(res, 403, 'Insufficient permissions. Requires quotation_edit or all_quotation_viewer permission.');
+  }
+  
   try {
     // Extract quotation ID/number from path (handles slashes)
     const quotationId = req.extractedQuotationNumber || req.params[0]?.split('/offers')[0] || req.params.quotationId;
@@ -1804,7 +2000,20 @@ router.delete('/*/offers/:offerId', extractQuotationNumber, authenticateToken, a
 // ============================================================================
 
 // Get all items for a specific offer
-router.get('/*/offers/:offerId/items', extractQuotationNumber, authenticateToken, authorize(['quotation_view']), async (req, res) => {
+router.get('/*/offers/:offerId/items', extractQuotationNumber, authenticateToken, async (req, res) => {
+  // Check permissions: allow quotation_view or all_quotation_viewer
+  const user = await require('../models/user.model').findById(req.user.userId).populate('permissions');
+  if (!user) {
+    return sendErrorResponse(res, 404, 'User not found');
+  }
+  
+  const hasAllAccess = hasAllQuotationAccess(user);
+  const canView = hasPermission(user, 'quotation_view');
+  
+  if (!hasAllAccess && !canView) {
+    return sendErrorResponse(res, 403, 'Insufficient permissions. Requires quotation_view or all_quotation_viewer permission.');
+  }
+  
   try {
     // Extract quotation number from path (handles slashes)
     const quotationNumber = req.extractedQuotationNumber || req.params[0]?.split('/offers')[0] || req.params.quotationNumber;
@@ -1825,7 +2034,20 @@ router.get('/*/offers/:offerId/items', extractQuotationNumber, authenticateToken
 });
 
 // Create new item for a specific offer
-router.post('/*/offers/:offerId/items', extractQuotationNumber, authenticateToken, authorize(['quotation_edit']), async (req, res) => {
+router.post('/*/offers/:offerId/items', extractQuotationNumber, authenticateToken, async (req, res) => {
+  // Check permissions: allow quotation_edit or all_quotation_viewer
+  const user = await require('../models/user.model').findById(req.user.userId).populate('permissions');
+  if (!user) {
+    return sendErrorResponse(res, 404, 'User not found');
+  }
+  
+  const hasAllAccess = hasAllQuotationAccess(user);
+  const canEdit = hasPermission(user, 'quotation_edit');
+  
+  if (!hasAllAccess && !canEdit) {
+    return sendErrorResponse(res, 403, 'Insufficient permissions. Requires quotation_edit or all_quotation_viewer permission.');
+  }
+  
   try {
     // Extract quotation number from path (handles slashes)
     const quotationNumber = req.extractedQuotationNumber || req.params[0]?.split('/offers')[0] || req.params.quotationNumber;
@@ -1865,7 +2087,20 @@ router.post('/*/offers/:offerId/items', extractQuotationNumber, authenticateToke
 });
 
 // Update specific offer item
-router.put('/*/offers/:offerId/items/:itemId', extractQuotationNumber, authenticateToken, authorize(['quotation_edit']), async (req, res) => {
+router.put('/*/offers/:offerId/items/:itemId', extractQuotationNumber, authenticateToken, async (req, res) => {
+  // Check permissions: allow quotation_edit or all_quotation_viewer
+  const user = await require('../models/user.model').findById(req.user.userId).populate('permissions');
+  if (!user) {
+    return sendErrorResponse(res, 404, 'User not found');
+  }
+  
+  const hasAllAccess = hasAllQuotationAccess(user);
+  const canEdit = hasPermission(user, 'quotation_edit');
+  
+  if (!hasAllAccess && !canEdit) {
+    return sendErrorResponse(res, 403, 'Insufficient permissions. Requires quotation_edit or all_quotation_viewer permission.');
+  }
+  
   try {
     // Extract quotation number from path (handles slashes)
     const quotationNumber = req.extractedQuotationNumber || req.params[0]?.split('/offers')[0] || req.params.quotationNumber;
@@ -1906,7 +2141,20 @@ router.put('/*/offers/:offerId/items/:itemId', extractQuotationNumber, authentic
 });
 
 // Delete specific offer item
-router.delete('/*/offers/:offerId/items/:itemId', extractQuotationNumber, authenticateToken, authorize(['quotation_edit']), async (req, res) => {
+router.delete('/*/offers/:offerId/items/:itemId', extractQuotationNumber, authenticateToken, async (req, res) => {
+  // Check permissions: allow quotation_edit or all_quotation_viewer
+  const user = await require('../models/user.model').findById(req.user.userId).populate('permissions');
+  if (!user) {
+    return sendErrorResponse(res, 404, 'User not found');
+  }
+  
+  const hasAllAccess = hasAllQuotationAccess(user);
+  const canEdit = hasPermission(user, 'quotation_edit');
+  
+  if (!hasAllAccess && !canEdit) {
+    return sendErrorResponse(res, 403, 'Insufficient permissions. Requires quotation_edit or all_quotation_viewer permission.');
+  }
+  
   try {
     // Extract quotation number from path (handles slashes)
     const quotationNumber = req.extractedQuotationNumber || req.params[0]?.split('/offers')[0] || req.params.quotationNumber;
@@ -1935,7 +2183,20 @@ router.delete('/*/offers/:offerId/items/:itemId', extractQuotationNumber, authen
 });
 
 // Toggle item acceptance status
-router.patch('/*/offers/:offerId/items/:itemId/accept', extractQuotationNumber, authenticateToken, authorize(['quotation_edit']), async (req, res) => {
+router.patch('/*/offers/:offerId/items/:itemId/accept', extractQuotationNumber, authenticateToken, async (req, res) => {
+  // Check permissions: allow quotation_edit or all_quotation_viewer
+  const user = await require('../models/user.model').findById(req.user.userId).populate('permissions');
+  if (!user) {
+    return sendErrorResponse(res, 404, 'User not found');
+  }
+  
+  const hasAllAccess = hasAllQuotationAccess(user);
+  const canEdit = hasPermission(user, 'quotation_edit');
+  
+  if (!hasAllAccess && !canEdit) {
+    return sendErrorResponse(res, 403, 'Insufficient permissions. Requires quotation_edit or all_quotation_viewer permission.');
+  }
+  
   try {
     // Extract quotation number from path (handles slashes)
     const quotationNumber = req.extractedQuotationNumber || req.params[0]?.split('/offers')[0] || req.params.quotationNumber;
@@ -1981,7 +2242,20 @@ router.patch('/*/offers/:offerId/items/:itemId/accept', extractQuotationNumber, 
 // ============================================================================
 
 // Add progress entry to quotation
-router.post('/*/progress', extractQuotationNumber, authenticateToken, authorize(['quotation_edit']), async (req, res) => {
+router.post('/*/progress', extractQuotationNumber, authenticateToken, async (req, res) => {
+  // Check permissions: allow quotation_edit or all_quotation_viewer
+  const user = await require('../models/user.model').findById(req.user.userId).populate('permissions');
+  if (!user) {
+    return sendErrorResponse(res, 404, 'User not found');
+  }
+  
+  const hasAllAccess = hasAllQuotationAccess(user);
+  const canEdit = hasPermission(user, 'quotation_edit');
+  
+  if (!hasAllAccess && !canEdit) {
+    return sendErrorResponse(res, 403, 'Insufficient permissions. Requires quotation_edit or all_quotation_viewer permission.');
+  }
+  
   try {
     // Extract quotation number from path (handles slashes)
     const quotationNumber = req.extractedQuotationNumber || req.params[0]?.split('/progress')[0] || req.params.quotationNumber;
@@ -2002,7 +2276,20 @@ router.post('/*/progress', extractQuotationNumber, authenticateToken, authorize(
 });
 
 // Delete progress entry from quotation
-router.delete('/*/progress/:index', extractQuotationNumber, authenticateToken, authorize(['quotation_edit']), async (req, res) => {
+router.delete('/*/progress/:index', extractQuotationNumber, authenticateToken, async (req, res) => {
+  // Check permissions: allow quotation_edit or all_quotation_viewer
+  const user = await require('../models/user.model').findById(req.user.userId).populate('permissions');
+  if (!user) {
+    return sendErrorResponse(res, 404, 'User not found');
+  }
+  
+  const hasAllAccess = hasAllQuotationAccess(user);
+  const canEdit = hasPermission(user, 'quotation_edit');
+  
+  if (!hasAllAccess && !canEdit) {
+    return sendErrorResponse(res, 403, 'Insufficient permissions. Requires quotation_edit or all_quotation_viewer permission.');
+  }
+  
   try {
     // Extract quotation number from path (handles slashes)
     const quotationNumber = req.extractedQuotationNumber || req.params[0]?.split('/progress')[0] || req.params.quotationNumber;
@@ -2038,7 +2325,20 @@ router.delete('/*/progress/:index', extractQuotationNumber, authenticateToken, a
 });
 
 // Update progress entry
-router.put('/*/progress/:index', extractQuotationNumber, authenticateToken, authorize(['quotation_edit']), async (req, res) => {
+router.put('/*/progress/:index', extractQuotationNumber, authenticateToken, async (req, res) => {
+  // Check permissions: allow quotation_edit or all_quotation_viewer
+  const user = await require('../models/user.model').findById(req.user.userId).populate('permissions');
+  if (!user) {
+    return sendErrorResponse(res, 404, 'User not found');
+  }
+  
+  const hasAllAccess = hasAllQuotationAccess(user);
+  const canEdit = hasPermission(user, 'quotation_edit');
+  
+  if (!hasAllAccess && !canEdit) {
+    return sendErrorResponse(res, 403, 'Insufficient permissions. Requires quotation_edit or all_quotation_viewer permission.');
+  }
+  
   try {
     // Extract quotation number from path (handles slashes)
     const quotationNumber = req.extractedQuotationNumber || req.params[0]?.split('/progress')[0] || req.params.quotationNumber;
@@ -2081,7 +2381,20 @@ router.put('/*/progress/:index', extractQuotationNumber, authenticateToken, auth
 });
 
 // Update last follow-up date
-router.patch('/:quotationNumber/follow-up', authenticateToken, authorize(['quotation_edit']), async (req, res) => {
+router.patch('/:quotationNumber/follow-up', authenticateToken, async (req, res) => {
+  // Check permissions: allow quotation_edit or all_quotation_viewer
+  const user = await require('../models/user.model').findById(req.user.userId).populate('permissions');
+  if (!user) {
+    return sendErrorResponse(res, 404, 'User not found');
+  }
+  
+  const hasAllAccess = hasAllQuotationAccess(user);
+  const canEdit = hasPermission(user, 'quotation_edit');
+  
+  if (!hasAllAccess && !canEdit) {
+    return sendErrorResponse(res, 403, 'Insufficient permissions. Requires quotation_edit or all_quotation_viewer permission.');
+  }
+  
   try {
     const { quotationNumber } = req.params;
 
@@ -2124,7 +2437,20 @@ router.patch('/*/track-download', extractQuotationNumber, authenticateToken, asy
 // ============================================================================
 
 // Generate new quotation number
-router.get('/generate/number', authenticateToken, authorize(['quotation_create']), async (req, res) => {
+router.get('/generate/number', authenticateToken, async (req, res) => {
+  // Check permissions: allow quotation_create or all_quotation_viewer
+  const user = await require('../models/user.model').findById(req.user.userId).populate('permissions');
+  if (!user) {
+    return sendErrorResponse(res, 404, 'User not found');
+  }
+  
+  const hasAllAccess = hasAllQuotationAccess(user);
+  const canCreate = hasPermission(user, 'quotation_create');
+  
+  if (!hasAllAccess && !canCreate) {
+    return sendErrorResponse(res, 403, 'Insufficient permissions. Requires quotation_create or all_quotation_viewer permission.');
+  }
+  
   try {
     const quotationNumber = await generateQuotationNumber();
     return sendSuccessResponse(res, 200, 'Quotation number generated successfully', { quotationNumber });
@@ -2151,7 +2477,20 @@ router.post('/migrate/offer-numbers', authenticateToken, authorize('admin'), asy
 // ============================================================================
 
 // Rebuild broken quotation
-router.post('/*/rebuild', extractQuotationNumber, authenticateToken, authorize(['quotation_edit']), async (req, res) => {
+router.post('/*/rebuild', extractQuotationNumber, authenticateToken, async (req, res) => {
+  // Check permissions: allow quotation_edit or all_quotation_viewer
+  const user = await require('../models/user.model').findById(req.user.userId).populate('permissions');
+  if (!user) {
+    return sendErrorResponse(res, 404, 'User not found');
+  }
+  
+  const hasAllAccess = hasAllQuotationAccess(user);
+  const canEdit = hasPermission(user, 'quotation_edit');
+  
+  if (!hasAllAccess && !canEdit) {
+    return sendErrorResponse(res, 403, 'Insufficient permissions. Requires quotation_edit or all_quotation_viewer permission.');
+  }
+  
   try {
     // Extract quotation number from path (handles slashes)
     let quotationNumber = req.extractedQuotationNumber;

@@ -50,14 +50,19 @@ const upload = multer({
         cb(new Error('Invalid file type for drawing file. Only DWG and DXF files are allowed.'), false);
       }
     } else if (file.fieldname === 'quotationImage') {
-      // Only allow JPG/JPEG files for quotationImage
+      // Allow JPG/JPEG, PNG, and PDF files for quotationImage
       const isJPG = filename.endsWith('.jpg') || filename.endsWith('.jpeg');
+      const isPNG = filename.endsWith('.png');
+      const isPDF = filename.endsWith('.pdf');
       const isImageMime = file.mimetype.startsWith('image/');
+      const isPDFMime = file.mimetype === 'application/pdf';
       
-      if (isJPG || (isImageMime && (file.mimetype === 'image/jpeg' || file.mimetype === 'image/jpg'))) {
+      if (isJPG || isPNG || isPDF || 
+          (isImageMime && (file.mimetype === 'image/jpeg' || file.mimetype === 'image/jpg' || file.mimetype === 'image/png')) ||
+          isPDFMime) {
         cb(null, true);
       } else {
-        cb(new Error('Invalid file type for quotation image. Only JPG/JPEG files are allowed.'), false);
+        cb(new Error('Invalid file type for quotation image. Only JPG/JPEG/PNG/PDF files are allowed.'), false);
       }
     } else {
       // Unknown field name
@@ -411,54 +416,82 @@ router.post('/', authenticateToken, authorize(['placeholder_test']), upload.fiel
       });
     }
 
-    // Process quotation image if provided
+    // Process quotation image/document if provided
     let quotationImageData = null;
     if (quotationImageFile) {
-      // Validate JPG file type
       const imageFileExtension = path.extname(quotationImageFile.originalname).toLowerCase();
-      if (!['.jpg', '.jpeg'].includes(imageFileExtension)) {
-        return res.status(400).json({
-          success: false,
-          message: 'Invalid file type for quotation image. Only JPG/JPEG files are allowed.'
-        });
-      }
-
-      const originalImageSize = quotationImageFile.size;
+      const isJPG = ['.jpg', '.jpeg'].includes(imageFileExtension);
+      const isPNG = imageFileExtension === '.png';
+      const isPDF = imageFileExtension === '.pdf';
       
-      // Optimize the image
-      let optimizedImageBuffer;
-      let optimizedImageSize;
-      try {
-        const optimizationResult = await optimizeImageAggressive(quotationImageFile.buffer);
-        optimizedImageBuffer = optimizationResult.optimized;
-        optimizedImageSize = optimizationResult.optimizedSize;
-      } catch (optimizationError) {
-        console.error('[Upload] Image optimization failed:', optimizationError.message);
+      // Validate file type
+      if (!isJPG && !isPNG && !isPDF) {
         return res.status(400).json({
           success: false,
-          message: `Image optimization failed: ${optimizationError.message}`
+          message: 'Invalid file type for quotation image. Only JPG/JPEG/PNG/PDF files are allowed.'
         });
       }
 
-      // Upload optimized image to GridFS
+      const originalFileSize = quotationImageFile.size;
+      let processedBuffer;
+      let processedFileSize;
+      let mimeType;
+      let filename;
+      let isOptimized = false;
+      
+      if (isPDF) {
+        // PDF files: store as-is without optimization
+        processedBuffer = quotationImageFile.buffer;
+        processedFileSize = originalFileSize;
+        mimeType = 'application/pdf';
+        filename = `quotation_document_${Date.now()}.pdf`;
+      } else if (isPNG || isJPG) {
+        // Image files: optimize
+        try {
+          const optimizationResult = await optimizeImageAggressive(quotationImageFile.buffer);
+          processedBuffer = optimizationResult.optimized;
+          processedFileSize = optimizationResult.optimizedSize;
+          isOptimized = true;
+          
+          // Determine MIME type based on original file
+          if (isPNG) {
+            mimeType = 'image/png';
+            filename = `quotation_image_${Date.now()}.png`;
+          } else {
+            mimeType = 'image/jpeg';
+            filename = `quotation_image_${Date.now()}.jpg`;
+          }
+        } catch (optimizationError) {
+          console.error('[Upload] Image optimization failed:', optimizationError.message);
+          return res.status(400).json({
+            success: false,
+            message: `Image optimization failed: ${optimizationError.message}`
+          });
+        }
+      }
+
+      // Upload processed file to GridFS
       const imageUploadResult = await drawingSpecificationGridFS.uploadBuffer(
-        optimizedImageBuffer,
-        `quotation_image_${Date.now()}.jpg`,
+        processedBuffer,
+        filename,
         {
           originalName: quotationImageFile.originalname,
           uploadedBy: req.user.userId,
-          isOptimized: true
+          isOptimized: isOptimized,
+          fileType: isPDF ? 'PDF' : (isPNG ? 'PNG' : 'JPG')
         },
-        'image/jpeg'
+        mimeType
       );
 
       quotationImageData = {
         fileId: imageUploadResult.fileId,
         filename: imageUploadResult.filename,
         originalName: quotationImageFile.originalname,
-        fileSize: optimizedImageSize,
-        originalFileSize: originalImageSize,
-        isOptimized: true,
+        fileSize: processedFileSize,
+        originalFileSize: originalFileSize,
+        isOptimized: isOptimized,
+        fileType: isPDF ? 'PDF' : (isPNG ? 'PNG' : 'JPG'),
+        mimeType: mimeType,
         uploadDate: new Date()
       };
     }
@@ -581,9 +614,15 @@ router.put('/:id', authenticateToken, authorize(['placeholder_test']), upload.fi
     // Update fields if provided
     if (bodyTypeId !== undefined) updateData.bodyTypeId = bodyTypeId;
     if (chassisTypeId !== undefined) updateData.chassisTypeId = chassisTypeId;
-    if (chassisModel !== undefined) updateData.chassisModel = chassisModel.trim();
+    if (chassisModel !== undefined) {
+      // Allow empty string or null for optional chassisModel
+      updateData.chassisModel = chassisModel ? chassisModel.trim() : '';
+    }
     if (sizeTypeId !== undefined) updateData.sizeTypeId = sizeTypeId;
-    if (dimension !== undefined) updateData.dimension = dimension.trim();
+    if (dimension !== undefined) {
+      // Allow empty string or null for optional dimension
+      updateData.dimension = dimension ? dimension.trim() : '';
+    }
 
     // Handle features
     if (features !== undefined) {
@@ -775,42 +814,68 @@ router.put('/:id', authenticateToken, authorize(['placeholder_test']), upload.fi
         }
       }
 
-      // Validate JPG file type
+      // Validate and process file type
       const imageFileExtension = path.extname(quotationImageFile.originalname).toLowerCase();
-      if (!['.jpg', '.jpeg'].includes(imageFileExtension)) {
-        return res.status(400).json({
-          success: false,
-          message: 'Invalid file type for quotation image. Only JPG/JPEG files are allowed.'
-        });
-      }
-
-      const originalImageSize = quotationImageFile.size;
+      const isJPG = ['.jpg', '.jpeg'].includes(imageFileExtension);
+      const isPNG = imageFileExtension === '.png';
+      const isPDF = imageFileExtension === '.pdf';
       
-      // Optimize the image
-      let optimizedImageBuffer;
-      let optimizedImageSize;
-      try {
-        const optimizationResult = await optimizeImageAggressive(quotationImageFile.buffer);
-        optimizedImageBuffer = optimizationResult.optimized;
-        optimizedImageSize = optimizationResult.optimizedSize;
-      } catch (optimizationError) {
-        console.error('[Upload] Image optimization failed:', optimizationError.message);
+      if (!isJPG && !isPNG && !isPDF) {
         return res.status(400).json({
           success: false,
-          message: `Image optimization failed: ${optimizationError.message}`
+          message: 'Invalid file type for quotation image. Only JPG/JPEG/PNG/PDF files are allowed.'
         });
       }
 
-      // Upload optimized image to GridFS
+      const originalFileSize = quotationImageFile.size;
+      let processedBuffer;
+      let processedFileSize;
+      let mimeType;
+      let filename;
+      let isOptimized = false;
+      
+      if (isPDF) {
+        // PDF files: store as-is without optimization
+        processedBuffer = quotationImageFile.buffer;
+        processedFileSize = originalFileSize;
+        mimeType = 'application/pdf';
+        filename = `quotation_document_${Date.now()}.pdf`;
+      } else if (isPNG || isJPG) {
+        // Image files: optimize
+        try {
+          const optimizationResult = await optimizeImageAggressive(quotationImageFile.buffer);
+          processedBuffer = optimizationResult.optimized;
+          processedFileSize = optimizationResult.optimizedSize;
+          isOptimized = true;
+          
+          // Determine MIME type based on original file
+          if (isPNG) {
+            mimeType = 'image/png';
+            filename = `quotation_image_${Date.now()}.png`;
+          } else {
+            mimeType = 'image/jpeg';
+            filename = `quotation_image_${Date.now()}.jpg`;
+          }
+        } catch (optimizationError) {
+          console.error('[Upload] Image optimization failed:', optimizationError.message);
+          return res.status(400).json({
+            success: false,
+            message: `Image optimization failed: ${optimizationError.message}`
+          });
+        }
+      }
+
+      // Upload processed file to GridFS
       const imageUploadResult = await drawingSpecificationGridFS.uploadBuffer(
-        optimizedImageBuffer,
-        `quotation_image_${Date.now()}.jpg`,
+        processedBuffer,
+        filename,
         {
           originalName: quotationImageFile.originalname,
           uploadedBy: req.user.userId,
-          isOptimized: true
+          isOptimized: isOptimized,
+          fileType: isPDF ? 'PDF' : (isPNG ? 'PNG' : 'JPG')
         },
-        'image/jpeg'
+        mimeType
       );
 
       // Update quotation image data
@@ -818,9 +883,11 @@ router.put('/:id', authenticateToken, authorize(['placeholder_test']), upload.fi
         fileId: imageUploadResult.fileId,
         filename: imageUploadResult.filename,
         originalName: quotationImageFile.originalname,
-        fileSize: optimizedImageSize,
-        originalFileSize: originalImageSize,
-        isOptimized: true,
+        fileSize: processedFileSize,
+        originalFileSize: originalFileSize,
+        isOptimized: isOptimized,
+        fileType: isPDF ? 'PDF' : (isPNG ? 'PNG' : 'JPG'),
+        mimeType: mimeType,
         uploadDate: new Date()
       };
     }

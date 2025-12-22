@@ -11,7 +11,7 @@ const { getRfqDocumentsGridFS } = require('../utils/gridfsHelper');
 const RFQDocument = require('../models/rfqDocument.model');
 const { RFQ } = require('../models/rfq.model');
 const User = require('../models/user.model');
-const { hasPermission } = require('../utils/permissionHelper');
+const { hasPermission, hasAllQuotationAccess } = require('../utils/permissionHelper');
 
 const gzip = promisify(zlib.gzip);
 const gunzip = promisify(zlib.gunzip);
@@ -50,6 +50,12 @@ const ensureRfqAccess = async (rfqId, user) => {
   );
   if (!rfq) {
     return { error: { status: 404, message: 'RFQ not found' } };
+  }
+
+  // Check if user has all_quotation_viewer permission first
+  const hasAllAccess = hasAllQuotationAccess(user);
+  if (hasAllAccess) {
+    return { rfq };
   }
 
   const canApprove = hasPermission(user, 'approve_rfq');
