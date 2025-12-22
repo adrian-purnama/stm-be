@@ -1103,6 +1103,257 @@ router.get('/emergency/diagnostics', authenticateToken, authorize(['quotation_vi
   }
 });
 
+/**
+ * GET /api/quotations/:id/download
+ * Permission: quotation_view
+ * Description: Download quotation as DOCX, DOC, or PDF document (server-side generation)
+ * Query params:
+ *   - format: 'docx' (default), 'doc', or 'pdf'
+ *   - offerId: Optional specific offer ID
+ *   - includeHeaderFooter: 'true' (default) or 'false'
+ *   - selectedNotes: JSON array of selected note indices
+ * Note: This route must come BEFORE the catch-all route to ensure it's matched first
+ */
+router.get('/:id/download', authenticateToken, authorize(['quotation_view']), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { offerId, includeHeaderFooter, format = 'docx' } = req.query; // Optional: specific offer ID, header/footer flag, and format
+    // Parse selectedNotes - if not provided or empty, default to empty array (no notes selected)
+    const selectedNotes = req.query.selectedNotes ? JSON.parse(req.query.selectedNotes) : [];
+    const userId = req.user.userId;
+    
+    // Parse includeHeaderFooter (default to true if not specified)
+    const includeHeaderFooterFlag = includeHeaderFooter === 'false' ? false : true;
+    
+    // Validate format
+    const validFormats = ['docx', 'doc', 'pdf'];
+    const targetFormat = format.toLowerCase();
+    if (!validFormats.includes(targetFormat)) {
+      return sendErrorResponse(res, 400, 'Invalid format', `Format must be one of: ${validFormats.join(', ')}`);
+    }
+
+    // Get quotation header by ID or quotationNumber
+    // Check if id is a MongoDB ObjectId
+    const isObjectId = /^[0-9a-fA-F]{24}$/.test(id);
+    let header;
+    let actualQuotationNumber;
+    
+    if (isObjectId) {
+      try {
+        header = await getQuotationHeaderById(id);
+        if (!header) {
+          console.error(`[Download] Header not found for ObjectId: ${id}`);
+          return sendErrorResponse(res, 404, 'Quotation not found');
+        }
+        if (!header.quotationNumber) {
+          console.error(`[Download] Header found but missing quotationNumber for ObjectId: ${id}`);
+          return sendErrorResponse(res, 404, 'Quotation not found - missing quotation number');
+        }
+        actualQuotationNumber = header.quotationNumber;
+        console.log(`[Download] Found header by ObjectId ${id}, quotationNumber: ${actualQuotationNumber}`);
+      } catch (error) {
+        console.error(`[Download] Error getting header by ObjectId ${id}:`, error.message);
+        // Try fallback: search by quotationNumber directly
+        header = await QuotationHeader.findById(id);
+        if (header && header.quotationNumber) {
+          actualQuotationNumber = header.quotationNumber;
+          console.log(`[Download] Fallback successful, quotationNumber: ${actualQuotationNumber}`);
+        } else {
+          return sendErrorResponse(res, 404, 'Quotation not found');
+        }
+      }
+    } else {
+      try {
+        actualQuotationNumber = decodeURIComponent(id);
+      } catch (e) {
+        // Already decoded or invalid, use as-is
+        actualQuotationNumber = id;
+      }
+      
+      // Find header by quotationNumber
+      header = await QuotationHeader.findOne({ quotationNumber: actualQuotationNumber });
+      if (!header) {
+        console.error(`[Download] Header not found for quotationNumber: ${actualQuotationNumber}`);
+        return sendErrorResponse(res, 404, 'Quotation not found');
+      }
+      console.log(`[Download] Found header by quotationNumber: ${actualQuotationNumber}`);
+    }
+    
+    // Get all offers for this quotation
+    let result;
+    try {
+      result = await getQuotationOffers(actualQuotationNumber);
+      if (!result || !result.header) {
+        console.error(`[Download] getQuotationOffers returned empty result for: ${actualQuotationNumber}`);
+        return sendErrorResponse(res, 404, 'Quotation offers not found');
+      }
+    } catch (error) {
+      console.error(`[Download] Error getting offers for ${actualQuotationNumber}:`, error.message);
+      return sendErrorResponse(res, 404, 'Quotation not found', error.message);
+    }
+    
+    // Check if user is a requester
+    const { hasPermission } = require('../utils/permissionHelper');
+    const User = require('../models/user.model');
+    const user = await User.findById(userId).populate('permissions');
+    const isRequester = hasPermission(user, 'quotation_requester') || 
+                       (header.requesterId && header.requesterId.toString() === userId.toString()) ||
+                       (result.rfq && result.rfq.requesterId && result.rfq.requesterId.toString() === userId.toString());
+    
+    // Generate document using the service (always generates DOCX first)
+    const { generateQuotationDocument, convertDocumentFormat } = require('../services/quotationDocumentService');
+    const docResult = await generateQuotationDocument(
+      {
+        header: result.header,
+        rfq: result.rfq,
+        offers: result.offers
+      },
+      offerId || null,
+      selectedNotes,
+      includeHeaderFooterFlag,
+      isRequester
+    );
+
+    // Handle new return format (object with buffer and qrCode) or legacy format (just buffer)
+    const docxBuffer = docResult?.buffer || docResult;
+    const qrCodeData = docResult?.qrCode || null;
+
+    // Convert to target format if needed
+    let finalBuffer;
+    if (targetFormat === 'docx') {
+      finalBuffer = docxBuffer;
+    } else {
+      // Convert DOCX to DOC or PDF using external service
+      try {
+        finalBuffer = await convertDocumentFormat(docxBuffer, targetFormat);
+      } catch (conversionError) {
+        console.error('Error converting document format:', conversionError);
+        return sendErrorResponse(res, 500, 'Failed to convert document format', conversionError.message);
+      }
+    }
+
+    // Track download
+    try {
+      await updateQuotationHeader(result.header._id, {
+        $push: { downloads: { userId, downloadedAt: new Date(), format: targetFormat } }
+      });
+    } catch (trackError) {
+      console.warn('Failed to track download:', trackError);
+      // Don't fail the download if tracking fails
+    }
+
+    // Determine filename and content type based on format
+    const quotationNumber = header.quotationNumber.replace(/[/\\]/g, '_');
+    
+    // Get customer name from result.header or result.rfq
+    // result.header should have customerName copied from RFQ in getQuotationOffers
+    let rawCustomerName = '';
+    if (result.header && result.header.customerName) {
+      rawCustomerName = result.header.customerName;
+    } else if (result.rfq && result.rfq.customerName) {
+      rawCustomerName = result.rfq.customerName;
+    }
+    
+    // Sanitize customer name for filename use
+    let customerName = '';
+    if (rawCustomerName && typeof rawCustomerName === 'string') {
+      customerName = rawCustomerName
+        .replace(/[/\\?%*:|"<>]/g, '_') // Replace invalid filename characters
+        .replace(/\s+/g, '_') // Replace spaces with underscores
+        .trim();
+    }
+    
+    // Debug logging
+    console.log('[Download] Customer name for filename:', {
+      rawCustomerName,
+      customerName,
+      hasHeaderCustomerName: !!(result.header && result.header.customerName),
+      hasRfqCustomerName: !!(result.rfq && result.rfq.customerName),
+      headerKeys: result.header ? Object.keys(result.header) : 'no header',
+      rfqKeys: result.rfq ? Object.keys(result.rfq) : 'no rfq'
+    });
+    
+    let filename = `Quotation_${quotationNumber}`;
+    
+    // Add customer name to filename if available
+    console.log('[Download] Before adding customer name - filename:', filename, 'customerName:', customerName, 'will add:', !!(customerName && customerName.length > 0));
+    if (customerName && customerName.length > 0) {
+      filename += `_${customerName}`;
+      console.log('[Download] After adding customer name - filename:', filename);
+    }
+    
+    if (offerId) {
+      // Find offer to get offer number
+      let foundOffer = null;
+      for (const offerGroup of result.offers) {
+        if (offerGroup.original?._id?.toString() === offerId.toString()) {
+          foundOffer = offerGroup.original;
+          break;
+        }
+        if (offerGroup.revisions) {
+          const revision = offerGroup.revisions.find(
+            (rev) => rev._id?.toString() === offerId.toString()
+          );
+          if (revision) {
+            foundOffer = revision;
+            break;
+          }
+        }
+      }
+      if (foundOffer && foundOffer.offerNumber) {
+        filename += `_Offer_${foundOffer.offerNumber.replace(/[/\\]/g, '_')}`;
+      }
+    }
+    
+    // Set filename extension and content type based on format
+    let contentType;
+    let fileExtension;
+    switch (targetFormat) {
+      case 'pdf':
+        fileExtension = '.pdf';
+        contentType = 'application/pdf';
+        break;
+      case 'doc':
+        fileExtension = '.doc';
+        contentType = 'application/msword';
+        break;
+      case 'docx':
+      default:
+        fileExtension = '.docx';
+        contentType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+        break;
+    }
+    filename += fileExtension;
+
+    // Debug: Log final filename before setting header
+    console.log('[Download] Final filename:', filename);
+
+    // Ensure finalBuffer is a proper Buffer instance
+    const outputBuffer = Buffer.isBuffer(finalBuffer) ? finalBuffer : Buffer.from(finalBuffer);
+    
+    // Encode filename for Content-Disposition header (RFC 5987)
+    // Use both filename (for older browsers) and filename* (for modern browsers with UTF-8 support)
+    const encodedFilename = encodeURIComponent(filename);
+    
+    // Set response headers
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"; filename*=UTF-8''${encodedFilename}`);
+    res.setHeader('Content-Length', outputBuffer.length);
+    
+    // Add QR code metadata in response headers (optional, for frontend use)
+    if (qrCodeData) {
+      res.setHeader('X-QR-Code-URL', qrCodeData.qrUrl);
+      res.setHeader('X-Document-Hash', qrCodeData.documentHash);
+    }
+
+    // Send the document as Buffer
+    res.send(outputBuffer);
+  } catch (error) {
+    console.error('Error generating quotation document:', error);
+    return sendErrorResponse(res, 500, 'Failed to generate quotation document', error.message);
+  }
+});
+
 // Get specific quotation by quotation number
 // Note: This route must come AFTER more specific routes like /*/header, /*/offers, etc.
 router.get('/*', extractQuotationNumber, authenticateToken, authorize(['quotation_view']), async (req, res) => {
@@ -1110,6 +1361,7 @@ router.get('/*', extractQuotationNumber, authenticateToken, authorize(['quotatio
   if (req.path.includes('/header') || req.path.includes('/offers') || req.path.includes('/status') || 
       req.path.includes('/progress') || req.path.includes('/follow-up') || req.path.includes('/track-download') ||
       req.path.includes('/rebuild') || req.path.includes('/emergency') || req.path.includes('/migrate') ||
+      req.path.includes('/download') ||
       req.path.startsWith('/by-id/') || req.path.startsWith('/generate/') || req.path.startsWith('/analysis')) {
     return res.status(404).json({ success: false, message: 'Route not found' });
   }
@@ -1864,211 +2116,6 @@ router.patch('/*/track-download', extractQuotationNumber, authenticateToken, asy
   } catch (error) {
     console.error('Error tracking download:', error);
     return sendErrorResponse(res, 400, 'Failed to track download', error.message);
-  }
-});
-
-/**
- * GET /api/quotations/:id/download
- * Permission: quotation_view
- * Description: Download quotation as DOCX, DOC, or PDF document (server-side generation)
- * Query params:
- *   - format: 'docx' (default), 'doc', or 'pdf'
- *   - offerId: Optional specific offer ID
- *   - includeHeaderFooter: 'true' (default) or 'false'
- *   - selectedNotes: JSON array of selected note indices
- */
-router.get('/:id/download', authenticateToken, authorize(['quotation_view']), async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { offerId, includeHeaderFooter, format = 'docx' } = req.query; // Optional: specific offer ID, header/footer flag, and format
-    // Parse selectedNotes - if not provided or empty, default to empty array (no notes selected)
-    const selectedNotes = req.query.selectedNotes ? JSON.parse(req.query.selectedNotes) : [];
-    const userId = req.user.userId;
-    
-    // Parse includeHeaderFooter (default to true if not specified)
-    const includeHeaderFooterFlag = includeHeaderFooter === 'false' ? false : true;
-    
-    // Validate format
-    const validFormats = ['docx', 'doc', 'pdf'];
-    const targetFormat = format.toLowerCase();
-    if (!validFormats.includes(targetFormat)) {
-      return sendErrorResponse(res, 400, 'Invalid format', `Format must be one of: ${validFormats.join(', ')}`);
-    }
-
-    // Get quotation header by ID or quotationNumber
-    let header;
-    try {
-      header = await getQuotationHeaderById(id);
-    } catch (error) {
-      header = await QuotationHeader.findOne({ quotationNumber: id });
-    }
-    
-    if (!header) {
-      return sendErrorResponse(res, 404, 'Quotation not found');
-    }
-    
-    // Get all offers for this quotation
-    const result = await getQuotationOffers(header.quotationNumber);
-    
-    // Check if user is a requester
-    const { hasPermission } = require('../utils/permissionHelper');
-    const User = require('../models/user.model');
-    const user = await User.findById(userId).populate('permissions');
-    const isRequester = hasPermission(user, 'quotation_requester') || 
-                       (header.requesterId && header.requesterId.toString() === userId.toString()) ||
-                       (result.rfq && result.rfq.requesterId && result.rfq.requesterId.toString() === userId.toString());
-    
-    // Generate document using the service (always generates DOCX first)
-    const { generateQuotationDocument, convertDocumentFormat } = require('../services/quotationDocumentService');
-    const docResult = await generateQuotationDocument(
-      {
-        header: result.header,
-        rfq: result.rfq,
-        offers: result.offers
-      },
-      offerId || null,
-      selectedNotes,
-      includeHeaderFooterFlag,
-      isRequester
-    );
-
-    // Handle new return format (object with buffer and qrCode) or legacy format (just buffer)
-    const docxBuffer = docResult?.buffer || docResult;
-    const qrCodeData = docResult?.qrCode || null;
-
-    // Convert to target format if needed
-    let finalBuffer;
-    if (targetFormat === 'docx') {
-      finalBuffer = docxBuffer;
-    } else {
-      // Convert DOCX to DOC or PDF using external service
-      try {
-        finalBuffer = await convertDocumentFormat(docxBuffer, targetFormat);
-      } catch (conversionError) {
-        console.error('Error converting document format:', conversionError);
-        return sendErrorResponse(res, 500, 'Failed to convert document format', conversionError.message);
-      }
-    }
-
-    // Track download
-    try {
-      await updateQuotationHeader(result.header._id, {
-        $push: { downloads: { userId, downloadedAt: new Date(), format: targetFormat } }
-      });
-    } catch (trackError) {
-      console.warn('Failed to track download:', trackError);
-      // Don't fail the download if tracking fails
-    }
-
-    // Determine filename and content type based on format
-    const quotationNumber = header.quotationNumber.replace(/[/\\]/g, '_');
-    
-    // Get customer name from result.header or result.rfq
-    // result.header should have customerName copied from RFQ in getQuotationOffers
-    let rawCustomerName = '';
-    if (result.header && result.header.customerName) {
-      rawCustomerName = result.header.customerName;
-    } else if (result.rfq && result.rfq.customerName) {
-      rawCustomerName = result.rfq.customerName;
-    }
-    
-    // Sanitize customer name for filename use
-    let customerName = '';
-    if (rawCustomerName && typeof rawCustomerName === 'string') {
-      customerName = rawCustomerName
-        .replace(/[/\\?%*:|"<>]/g, '_') // Replace invalid filename characters
-        .replace(/\s+/g, '_') // Replace spaces with underscores
-        .trim();
-    }
-    
-    // Debug logging
-    console.log('[Download] Customer name for filename:', {
-      rawCustomerName,
-      customerName,
-      hasHeaderCustomerName: !!(result.header && result.header.customerName),
-      hasRfqCustomerName: !!(result.rfq && result.rfq.customerName),
-      headerKeys: result.header ? Object.keys(result.header) : 'no header',
-      rfqKeys: result.rfq ? Object.keys(result.rfq) : 'no rfq'
-    });
-    
-    let filename = `Quotation_${quotationNumber}`;
-    
-    // Add customer name to filename if available
-    console.log('[Download] Before adding customer name - filename:', filename, 'customerName:', customerName, 'will add:', !!(customerName && customerName.length > 0));
-    if (customerName && customerName.length > 0) {
-      filename += `_${customerName}`;
-      console.log('[Download] After adding customer name - filename:', filename);
-    }
-    
-    if (offerId) {
-      // Find offer to get offer number
-      let foundOffer = null;
-      for (const offerGroup of result.offers) {
-        if (offerGroup.original?._id?.toString() === offerId.toString()) {
-          foundOffer = offerGroup.original;
-          break;
-        }
-        if (offerGroup.revisions) {
-          const revision = offerGroup.revisions.find(
-            (rev) => rev._id?.toString() === offerId.toString()
-          );
-          if (revision) {
-            foundOffer = revision;
-            break;
-          }
-        }
-      }
-      if (foundOffer && foundOffer.offerNumber) {
-        filename += `_Offer_${foundOffer.offerNumber.replace(/[/\\]/g, '_')}`;
-      }
-    }
-    
-    // Set filename extension and content type based on format
-    let contentType;
-    let fileExtension;
-    switch (targetFormat) {
-      case 'pdf':
-        fileExtension = '.pdf';
-        contentType = 'application/pdf';
-        break;
-      case 'doc':
-        fileExtension = '.doc';
-        contentType = 'application/msword';
-        break;
-      case 'docx':
-      default:
-        fileExtension = '.docx';
-        contentType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
-        break;
-    }
-    filename += fileExtension;
-
-    // Debug: Log final filename before setting header
-    console.log('[Download] Final filename:', filename);
-
-    // Ensure finalBuffer is a proper Buffer instance
-    const outputBuffer = Buffer.isBuffer(finalBuffer) ? finalBuffer : Buffer.from(finalBuffer);
-    
-    // Encode filename for Content-Disposition header (RFC 5987)
-    // Use both filename (for older browsers) and filename* (for modern browsers with UTF-8 support)
-    const encodedFilename = encodeURIComponent(filename);
-    
-    // Set response headers
-    res.setHeader('Content-Type', contentType);
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"; filename*=UTF-8''${encodedFilename}`);
-    res.setHeader('Content-Length', outputBuffer.length);
-    
-    // Add QR code metadata in response headers (optional, for frontend use)
-    if (qrCodeData) {
-      res.setHeader('X-QR-Code-URL', qrCodeData.qrUrl);
-      res.setHeader('X-Document-Hash', qrCodeData.documentHash);
-    }
-
-    // Send the document as Buffer
-    res.send(outputBuffer);
-  } catch (error) {
-    console.error('Error generating quotation document:', error);
-    return sendErrorResponse(res, 500, 'Failed to generate quotation document', error.message);
   }
 });
 
