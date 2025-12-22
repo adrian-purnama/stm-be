@@ -1106,11 +1106,11 @@ router.get('/emergency/diagnostics', authenticateToken, authorize(['quotation_vi
 // Get specific quotation by quotation number
 // Note: This route must come AFTER more specific routes like /*/header, /*/offers, etc.
 router.get('/*', extractQuotationNumber, authenticateToken, authorize(['quotation_view']), async (req, res) => {
-  // Skip if this matches a more specific route
+  // Skip if this matches a more specific route or analysis routes
   if (req.path.includes('/header') || req.path.includes('/offers') || req.path.includes('/status') || 
       req.path.includes('/progress') || req.path.includes('/follow-up') || req.path.includes('/track-download') ||
       req.path.includes('/rebuild') || req.path.includes('/emergency') || req.path.includes('/migrate') ||
-      req.path.startsWith('/by-id/') || req.path.startsWith('/generate/')) {
+      req.path.startsWith('/by-id/') || req.path.startsWith('/generate/') || req.path.startsWith('/analysis')) {
     return res.status(404).json({ success: false, message: 'Route not found' });
   }
   
@@ -1144,6 +1144,13 @@ router.get('/*', extractQuotationNumber, authenticateToken, authorize(['quotatio
         // Already decoded or invalid, use as-is
         actualQuotationNumber = quotationNumber;
       }
+      
+      // Verify quotation exists before calling getQuotationOffers
+      const QuotationHeader = require('../models/quotationHeader.model');
+      const headerExists = await QuotationHeader.findOne({ quotationNumber: actualQuotationNumber }).select('_id quotationNumber');
+      if (!headerExists) {
+        return sendErrorResponse(res, 404, 'Quotation not found');
+      }
     }
     
     const result = await getQuotationOffers(actualQuotationNumber);
@@ -1151,6 +1158,10 @@ router.get('/*', extractQuotationNumber, authenticateToken, authorize(['quotatio
     return sendSuccessResponse(res, 200, 'Quotation retrieved successfully', result);
   } catch (error) {
     console.error('Error getting quotation:', error);
+    // Handle the specific "Quotation header not found" error with 404 status
+    if (error.message === 'Quotation header not found') {
+      return sendErrorResponse(res, 404, 'Quotation not found');
+    }
     return sendErrorResponse(res, 400, 'Failed to get quotation', error.message);
   }
 });

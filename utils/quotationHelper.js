@@ -1,6 +1,8 @@
 const QuotationHeader = require('../models/quotationHeader.model');
 const QuotationOffer = require('../models/quotationOffer.model');
 const OfferItem = require('../models/offerItem.model');
+const { RFQ } = require('../models/rfq.model');
+const BodyType = require('../models/bodyType.model');
 
 // Helper function to add timeout to promises
 const withTimeout = (promise, timeoutMs, fallback) => {
@@ -1292,6 +1294,18 @@ const getQuotationAnalysis = async ({ startDate, endDate, metric, userId, export
       ...dateFilter
     });
 
+    // Get RFQ statistics
+    const rfqs = await RFQ.find({
+      ...dateFilter
+    });
+    
+    const rfqStats = {
+      total: rfqs.length,
+      approved: rfqs.filter(r => r.status === 'approved').length,
+      rejected: rfqs.filter(r => r.status === 'rejected').length,
+      pending: rfqs.filter(r => r.status === 'pending').length
+    };
+
 
     // Calculate basic metrics (counts only)
     const totalQuotations = quotations.length;
@@ -1451,6 +1465,175 @@ const getQuotationAnalysis = async ({ startDate, endDate, metric, userId, export
         type: q.status?.type || 'open'
       }));
 
+    // Body type frequency - aggregate from RFQs and Quotations
+    const bodyTypeFrequencyMap = {};
+    
+    try {
+      // Count body types from RFQs
+      const rfqsWithBodyType = await RFQ.find({
+        ...dateFilter,
+        bodyTypeId: { $exists: true, $ne: null }
+      }).populate({
+        path: 'bodyTypeId',
+        select: 'name shortName',
+        model: 'BodyType'
+      });
+      
+      rfqsWithBodyType.forEach(rfq => {
+        // Handle populated bodyTypeId
+        if (rfq.bodyTypeId) {
+          let bodyTypeName = 'Unknown';
+          // Check if it's a populated object with name property
+          if (rfq.bodyTypeId && typeof rfq.bodyTypeId === 'object' && rfq.bodyTypeId.name) {
+            bodyTypeName = rfq.bodyTypeId.name;
+          } else if (rfq.bodyTypeId && typeof rfq.bodyTypeId.toString === 'function') {
+            // If it's an ObjectId that wasn't populated, skip it
+            return;
+          }
+          
+          if (!bodyTypeFrequencyMap[bodyTypeName]) {
+            bodyTypeFrequencyMap[bodyTypeName] = {
+              name: bodyTypeName,
+              rfq: 0,
+              quotation: 0,
+              total: 0
+            };
+          }
+          bodyTypeFrequencyMap[bodyTypeName].rfq += 1;
+          bodyTypeFrequencyMap[bodyTypeName].total += 1;
+        }
+      });
+    } catch (error) {
+      console.error('Error counting body types from RFQs:', error);
+    }
+    
+    try {
+      // Count body types from Quotations (via rfqId)
+      const quotationsWithRfq = await QuotationHeader.find({
+        ...dateFilter,
+        rfqId: { $exists: true, $ne: null }
+      }).populate({
+        path: 'rfqId',
+        select: 'bodyTypeId',
+        populate: {
+          path: 'bodyTypeId',
+          select: 'name shortName',
+          model: 'BodyType'
+        }
+      });
+      
+      quotationsWithRfq.forEach(quotation => {
+        if (quotation.rfqId && quotation.rfqId.bodyTypeId) {
+          let bodyTypeName = 'Unknown';
+          // Check if it's a populated object with name property
+          if (quotation.rfqId.bodyTypeId && typeof quotation.rfqId.bodyTypeId === 'object' && quotation.rfqId.bodyTypeId.name) {
+            bodyTypeName = quotation.rfqId.bodyTypeId.name;
+          } else {
+            // If it's an ObjectId that wasn't populated, skip it
+            return;
+          }
+          
+          if (!bodyTypeFrequencyMap[bodyTypeName]) {
+            bodyTypeFrequencyMap[bodyTypeName] = {
+              name: bodyTypeName,
+              rfq: 0,
+              quotation: 0,
+              total: 0
+            };
+          }
+          bodyTypeFrequencyMap[bodyTypeName].quotation += 1;
+          bodyTypeFrequencyMap[bodyTypeName].total += 1;
+        }
+      });
+    } catch (error) {
+      console.error('Error counting body types from Quotations:', error);
+    }
+    
+    const bodyTypeFrequency = Object.values(bodyTypeFrequencyMap)
+      .sort((a, b) => b.total - a.total);
+
+    // Quarterly status breakdown
+    const quarterlyStatusMap = {};
+    const yearsWithData = new Set();
+    
+    // Determine the year range to process
+    let startYear, endYear;
+    if (startDate && endDate) {
+      startYear = new Date(startDate).getFullYear();
+      endYear = new Date(endDate).getFullYear();
+    } else {
+      // Default to current year if no date filter
+      const currentYear = new Date().getFullYear();
+      startYear = currentYear;
+      endYear = currentYear;
+    }
+    
+    // First pass: collect data and track which years have data
+    quotations.forEach(q => {
+      const date = new Date(q.createdAt);
+      const year = date.getFullYear();
+      const month = date.getMonth();
+      let quarter;
+      
+      if (month >= 0 && month <= 2) quarter = 1; // Q1: Jan-Mar
+      else if (month >= 3 && month <= 5) quarter = 2; // Q2: Apr-Jun
+      else if (month >= 6 && month <= 8) quarter = 3; // Q3: Jul-Sep
+      else quarter = 4; // Q4: Oct-Dec
+      
+      yearsWithData.add(year);
+      
+      const key = `Q${quarter} ${year}`;
+      if (!quarterlyStatusMap[key]) {
+        quarterlyStatusMap[key] = {
+          label: key,
+          win: 0,
+          loss: 0,
+          cancel: 0,
+          open: 0
+        };
+      }
+      
+      const status = q.status?.type || 'open';
+      if (status === 'close') {
+        quarterlyStatusMap[key].cancel += 1;
+      } else if (quarterlyStatusMap[key].hasOwnProperty(status)) {
+        quarterlyStatusMap[key][status] += 1;
+      }
+    });
+    
+    // Second pass: ensure all quarters exist for all years in the range
+    // This ensures Q1-Q4 are always shown even if some have no data
+    for (let year = startYear; year <= endYear; year++) {
+      for (let quarter = 1; quarter <= 4; quarter++) {
+        const key = `Q${quarter} ${year}`;
+        if (!quarterlyStatusMap[key]) {
+          quarterlyStatusMap[key] = {
+            label: key,
+            win: 0,
+            loss: 0,
+            cancel: 0,
+            open: 0
+          };
+        }
+      }
+    }
+    
+    // Convert to array and sort by year and quarter
+    const quarterlyStatus = Object.values(quarterlyStatusMap)
+      .sort((a, b) => {
+        // Extract year and quarter from label (e.g., "Q1 2024")
+        const aMatch = a.label.match(/Q(\d+)\s+(\d+)/);
+        const bMatch = b.label.match(/Q(\d+)\s+(\d+)/);
+        if (!aMatch || !bMatch) return 0;
+        const aYear = parseInt(aMatch[2]);
+        const bYear = parseInt(bMatch[2]);
+        const aQuarter = parseInt(aMatch[1]);
+        const bQuarter = parseInt(bMatch[1]);
+        
+        if (aYear !== bYear) return aYear - bYear;
+        return aQuarter - bQuarter;
+      });
+
     // Time period summary
     const timePeriodSummary = {
       startDate: startDate || new Date(new Date().getFullYear(), 0, 1).toISOString().split('T')[0],
@@ -1469,7 +1652,10 @@ const getQuotationAnalysis = async ({ startDate, endDate, metric, userId, export
       topCustomers,
       recentActivity,
       timePeriodSummary,
-      followUpStatus
+      followUpStatus,
+      rfqStats,
+      bodyTypeFrequency,
+      quarterlyStatus
     };
   } catch (error) {
     console.error('Error in getQuotationAnalysis:', error);

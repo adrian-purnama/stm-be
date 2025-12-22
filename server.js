@@ -39,13 +39,13 @@ const corsOptions = {
     
     // In development/preprod, allow all origins
     if (process.env.NODE_ENV_BUILD !== 'production') {
-      console.log(`✅ CORS: Allowing origin ${origin} (non-production mode)`);
+      // console.log(`✅ CORS: Allowing origin ${origin} (non-production mode)`);
       return callback(null, true);
     }
     
     // In production, check against allowed list
     if (allowedOrigins.includes(origin)) {
-      console.log(`✅ CORS: Allowing origin ${origin}`);
+      // console.log(`✅ CORS: Allowing origin ${origin}`);
       callback(null, true);
     } else {
       console.log(`❌ CORS: Blocking origin ${origin}`);
@@ -187,8 +187,9 @@ const fixChassisTypeIndexes = async () => {
 connectDB();
 
 app.use('/api/auth', require('./routes/auth'));
-app.use('/api/quotations', require('./routes/quotation'));
+// Mount analysis routes BEFORE general quotation routes to ensure they're matched first
 app.use('/api/quotations/analysis', require('./routes/quotationAnalysis'));
+app.use('/api/quotations', require('./routes/quotation'));
 app.use('/api/drawing-specifications', require('./routes/drawingSpecifications'));
 app.use('/api/body-types', require('./routes/bodyTypes'));
 app.use('/api/chassis-types', require('./routes/chassisTypes'));
