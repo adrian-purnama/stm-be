@@ -1051,14 +1051,144 @@ const rotateImage90Degrees = async (imageBuffer) => {
   }
 };
 
-// Fetch drawing image as base64
-const fetchDrawingImageAsBase64 = async (drawingId, fileId, rotate = false) => {
+/**
+ * Extract images from PDF using LibreOffice API
+ * @param {Buffer} pdfBuffer - PDF file buffer
+ * @param {string} mode - Extraction mode: 'pages' (convert pages to PNG) or 'extract' (extract embedded images)
+ * @returns {Promise<Buffer[]>} Array of extracted image buffers (one per page/image)
+ */
+const extractImagesFromPDF = async (pdfBuffer, mode = 'pages') => {
+  try {
+    const FormData = require('form-data');
+    const fetch = require('node-fetch');
+    
+    // Create form data with the PDF file
+    const form = new FormData();
+    form.append('file', pdfBuffer, {
+      filename: 'quotation.pdf',
+      contentType: 'application/pdf'
+    });
+
+    // Call external LibreOffice API
+    const apiUrl = 'https://libreoffice.amfphub.com';
+    const apiKey = process.env.LIBREOFFICE_API_KEY || 'adriangacor';
+    
+    // Use mode=pages&format=png to convert all PDF pages to PNG images
+    const response = await fetch(`${apiUrl}/pdf-images?mode=${mode}&format=png`, {
+      method: 'POST',
+      headers: {
+        'X-API-KEY': apiKey,
+        ...form.getHeaders()
+      },
+      body: form
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`PDF image extraction failed: ${response.status} ${response.statusText} - ${errorText}`);
+    }
+
+    // Parse JSON response from LibreOffice API
+    const jsonResponse = await response.json();
+    
+    // Log full API response for debugging
+    console.log(`[PDF Extraction] API Response - count: ${jsonResponse.count || 'N/A'}, images array length: ${jsonResponse.images?.length || 0}`);
+    console.log(`[PDF Extraction] Mode used: ${mode}`);
+    
+    // Validate response structure
+    if (!jsonResponse.images || !Array.isArray(jsonResponse.images) || jsonResponse.images.length === 0) {
+      throw new Error('No images found in PDF extraction response');
+    }
+    
+    // Extract all images from the images array
+    const imageBuffers = [];
+    
+    for (const image of jsonResponse.images) {
+      if (!image.data) {
+        console.warn(`[PDF Extraction] Skipping image at index ${image.index}: missing data`);
+        continue;
+      }
+      
+      // Log extraction details for debugging
+      console.log(`[PDF Extraction] Extracted image ${image.index + 1}/${jsonResponse.images.length}: format=${image.format}, width=${image.width}, height=${image.height}`);
+      
+      // Decode base64 image data to buffer
+      const imageBuffer = Buffer.from(image.data, 'base64');
+      imageBuffers.push(imageBuffer);
+    }
+    
+    if (imageBuffers.length === 0) {
+      throw new Error('No valid images found in PDF extraction response');
+    }
+    
+    console.log(`[PDF Extraction] Successfully extracted ${imageBuffers.length} image(s) from PDF`);
+    
+    return imageBuffers;
+  } catch (error) {
+    console.error('Error extracting images from PDF:', error);
+    throw error;
+  }
+};
+
+/**
+ * Fetch drawing image as base64
+ * @param {string} drawingId - Drawing specification ID
+ * @param {string} fileId - File ID in GridFS
+ * @param {Object} quotationImageMetadata - Metadata about the quotation image (for PDF detection)
+ * @param {boolean} rotate - Whether to rotate the image 90 degrees
+ * @returns {Promise<string | string[]>} Base64 string for single image (non-PDF), or array of base64 strings for PDFs (one per page)
+ */
+const fetchDrawingImageAsBase64 = async (drawingId, fileId, quotationImageMetadata = null, rotate = false) => {
   try {
     const objectId = new mongoose.Types.ObjectId(fileId);
-    const fileBuffer = await drawingSpecificationGridFS.getFileBuffer(objectId);
+    let fileBuffer = await drawingSpecificationGridFS.getFileBuffer(objectId);
     
+    // Check if file is PDF and needs image extraction
+    const isPDF = quotationImageMetadata && (
+      quotationImageMetadata.fileType === 'PDF' || 
+      quotationImageMetadata.mimeType === 'application/pdf' ||
+      (quotationImageMetadata.originalName && quotationImageMetadata.originalName.toLowerCase().endsWith('.pdf'))
+    );
+    
+    if (isPDF) {
+      // Extract images from PDF using mode=pages&format=png (converts all PDF pages to PNG images)
+      console.log(`[PDF Extraction] Extracting images from PDF for drawing ${drawingId}`);
+      // Use 'pages' mode with format=png to convert all PDF pages to PNG images
+      let imageBuffers = await extractImagesFromPDF(fileBuffer, 'pages');
+      
+      // If we only got 1 image but PDF might have multiple pages, try 'extract' mode
+      if (imageBuffers.length === 1) {
+        console.log(`[PDF Extraction] Only got 1 image with 'pages' mode, trying 'extract' mode...`);
+        try {
+          const extractBuffers = await extractImagesFromPDF(fileBuffer, 'extract');
+          if (extractBuffers.length > imageBuffers.length) {
+            console.log(`[PDF Extraction] 'extract' mode returned ${extractBuffers.length} images, using those instead`);
+            imageBuffers = extractBuffers;
+          }
+        } catch (extractError) {
+          console.warn(`[PDF Extraction] 'extract' mode failed, using 'pages' mode result:`, extractError.message);
+        }
+      }
+      
+      // Convert all image buffers to base64 strings
+      const base64Strings = imageBuffers.map((buffer, index) => {
+        if (rotate) {
+          // Rotate if needed
+          return rotateImage90Degrees(buffer).then(rotatedBuffer => rotatedBuffer.toString('base64'));
+        }
+        return Promise.resolve(buffer.toString('base64'));
+      });
+      
+      // Wait for all rotations to complete (if any)
+      const base64Results = await Promise.all(base64Strings);
+      
+      // Always return array for PDFs (even if single page) for consistency
+      return base64Results;
+    }
+    
+    // For non-PDF images, return single base64 string
     if (rotate) {
-      // Rotate if needed (implement with sharp if required)
+      // Rotate if needed
       const rotatedBuffer = await rotateImage90Degrees(fileBuffer);
       return rotatedBuffer.toString('base64');
     }
@@ -1945,8 +2075,12 @@ const generateDocumentXMLFromScratch = async (templateData, tableMap = {}, heade
   
   // Drawing images - placed after drawings info text
   if (templateData.has_images && templateData.images && templateData.images.length > 0) {
+    console.log(`[Document XML] Adding ${templateData.images.length} drawing image(s) to document body`);
+    let imagesAdded = 0;
     templateData.images.forEach((img, idx) => {
       if (img.imageTag) {
+        imagesAdded++;
+        console.log(`[Document XML] Adding image ${idx + 1}/${templateData.images.length} to body (pageNumber: ${img.pageNumber || 'N/A'}, drawingNumber: ${img.drawingNumber || 'N/A'})`);
         bodyXML += `<w:p>
           <w:pPr>
             <w:spacing w:after="0" w:line="200" w:lineRule="auto"/>
@@ -1956,8 +2090,11 @@ const generateDocumentXMLFromScratch = async (templateData, tableMap = {}, heade
             ${img.imageTag}
           </w:r>
         </w:p>`;
+      } else {
+        console.warn(`[Document XML] Skipping image ${idx + 1} - missing imageTag`);
       }
     });
+    console.log(`[Document XML] Successfully added ${imagesAdded} image(s) to document body`);
   }
   
   // Notes images section - insert after all text and marketing name
@@ -2569,6 +2706,7 @@ const createDOCXFromScratch = async (templateData, tableMap = {}, imageData = []
   
   // Process drawing images
   if (processedTemplateData.images && processedTemplateData.images.length > 0) {
+    console.log(`[DOCX Creation] Processing ${processedTemplateData.images.length} drawing image(s)`);
     processedTemplateData.images = processedTemplateData.images.map((img, idx) => {
       if (img.imageTag) {
         try {
@@ -2607,7 +2745,7 @@ const createDOCXFromScratch = async (templateData, tableMap = {}, imageData = []
           zip.file(imagePath, imageBuffer);
           imageRelationships.push(`<Relationship Id="${relationshipId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image${relationshipIdCounter}.jpg"/>`);
           
-          console.log(`[Drawing Image ${idx + 1}] Successfully processed: ${relationshipId}, size: ${imageBuffer.length} bytes, path: ${imagePath}`);
+          console.log(`[Drawing Image ${idx + 1}/${processedTemplateData.images.length}] Successfully processed: ${relationshipId}, size: ${imageBuffer.length} bytes, path: ${imagePath}, pageNumber: ${img.pageNumber || 'N/A'}`);
           
           // Drawing images: 5.5 x 7.5 inches (fits within A4 page with margins)
           // 1 inch = 914400 EMU, so 5.5 inches = 5,029,200 EMU, 7.5 inches = 6,858,000 EMU
@@ -2626,6 +2764,7 @@ const createDOCXFromScratch = async (templateData, tableMap = {}, imageData = []
       }
       return img;
     });
+    console.log(`[DOCX Creation] Successfully processed ${processedTemplateData.images.length} drawing image(s) into XML format`);
   }
   
   // Process notes images
@@ -3028,7 +3167,7 @@ const generateQuotationDocument = async (quotationData, offerId = null, selected
       ? createDrawingsInfo(itemsWithDrawings, header.quotationNumber)
       : "";
     
-    // Preload base64 images for drawings (use quotationImage - always JPG)
+    // Preload base64 images for drawings (use quotationImage - JPG, PNG, or PDF)
     const imageData = [];
     for (const item of itemsWithDrawings) {
       const drawing = item.drawingSpecification;
@@ -3036,14 +3175,33 @@ const generateQuotationDocument = async (quotationData, offerId = null, selected
       
       if (quotationImage && quotationImage.fileId) {
         try {
-          const base64String = await fetchDrawingImageAsBase64(drawing._id, quotationImage.fileId, true);
-          imageData.push({
-            karoseri: item.karoseri,
-            chassis: item.chassis,
-            imageTag: base64String,
-            itemNumber: activeOffer.offerItems.indexOf(item) + 1,
-            drawingNumber: drawing.drawingNumber,
-            filename: quotationImage.originalName
+          // Pass quotationImage metadata to handle PDF extraction
+          // Returns string for single images, array for PDFs with multiple pages
+          const base64Result = await fetchDrawingImageAsBase64(
+            drawing._id, 
+            quotationImage.fileId, 
+            quotationImage, 
+            true
+          );
+          
+          // Handle both single image (string) and multiple images (array)
+          const base64Images = Array.isArray(base64Result) ? base64Result : [base64Result];
+          
+          console.log(`[Image Loading] Processing ${base64Images.length} image(s) for drawing ${drawing._id} (${drawing.drawingNumber})`);
+          
+          // Add each image to imageData
+          base64Images.forEach((base64String, imageIndex) => {
+            const imageEntry = {
+              karoseri: item.karoseri,
+              chassis: item.chassis,
+              imageTag: base64String,
+              itemNumber: activeOffer.offerItems.indexOf(item) + 1,
+              drawingNumber: drawing.drawingNumber,
+              filename: quotationImage.originalName,
+              pageNumber: base64Images.length > 1 ? imageIndex + 1 : undefined // Add page number for multi-page PDFs
+            };
+            imageData.push(imageEntry);
+            console.log(`[Image Loading] Added image ${imageIndex + 1}/${base64Images.length} to imageData (pageNumber: ${imageEntry.pageNumber || 'N/A'}, base64 length: ${base64String.length})`);
           });
         } catch (err) {
           console.error(`Failed to load quotation image for drawing ${drawing._id}:`, err.message);

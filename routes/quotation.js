@@ -12,7 +12,7 @@ const QuotationOffer = require('../models/quotationOffer.model');
 const OfferItem = require('../models/offerItem.model');
 const User = require('../models/user.model');
 const { sendQuotationNotificationEmail } = require('../utils/emailUtils');
-const { hasPermission, hasAnyPermission, getAllUserPermissions, hasAllQuotationAccess } = require('../utils/permissionHelper');
+const { hasPermission, hasAnyPermission, getAllUserPermissions, hasAllQuotationAccess, hasAllQuotationViewerOnly } = require('../utils/permissionHelper');
 const { sendSuccessResponse, sendErrorResponse } = require('../utils/errorHandler');
 const {
   createQuotationHeader,
@@ -93,6 +93,35 @@ const convertRfqItemsToOfferItems = (rfqItems, rfq) => {
     
     return baseItem;
   });
+};
+
+// ============================================================================
+// HELPER FUNCTION: Check if user can modify quotation
+// ============================================================================
+const canModifyQuotation = (user, quotationHeader) => {
+  if (!user || !quotationHeader) {
+    return false;
+  }
+  
+  const userId = user._id.toString();
+  
+  // Check if user is admin (has full access)
+  const isAdmin = hasAnyPermission(user, ['quotation_admin', 'admin', 'system_admin']) || 
+                  require('../utils/permissionHelper').isSuperAdmin(user);
+  
+  if (isAdmin) {
+    return true;
+  }
+  
+  // Check if user is the creator
+  const creatorId = quotationHeader.creatorId?.toString() || 
+                    (typeof quotationHeader.creatorId === 'object' && quotationHeader.creatorId?._id?.toString());
+  
+  if (creatorId === userId) {
+    return true;
+  }
+  
+  return false;
 };
 
 // ============================================================================
@@ -727,17 +756,21 @@ router.get('/debug/offer-items', authenticateToken, async (req, res) => {
  * Description: Create a new quotation
  */
 router.post('/', authenticateToken, async (req, res) => {
-  // Check permissions: allow quotation_create or all_quotation_viewer
+  // Check permissions: allow quotation_create only (exclude view-only access)
   const user = await require('../models/user.model').findById(req.user.userId).populate('permissions');
   if (!user) {
     return sendErrorResponse(res, 404, 'User not found');
   }
   
-  const hasAllAccess = hasAllQuotationAccess(user);
+  const hasViewOnly = hasAllQuotationViewerOnly(user);
   const canCreate = hasPermission(user, 'quotation_create');
   
-  if (!hasAllAccess && !canCreate) {
-    return sendErrorResponse(res, 403, 'Insufficient permissions. Requires quotation_create or all_quotation_viewer permission.');
+  if (hasViewOnly) {
+    return sendErrorResponse(res, 403, 'Insufficient permissions. View-only access cannot create quotations.');
+  }
+  
+  if (!canCreate) {
+    return sendErrorResponse(res, 403, 'Insufficient permissions. Requires quotation_create permission.');
   }
   
   try {
@@ -1530,17 +1563,21 @@ router.put('/*', extractQuotationNumber, authenticateToken, async (req, res, nex
     return next();
   }
   
-  // Check permissions: allow quotation_edit or all_quotation_viewer
+  // Check permissions: allow quotation_edit only (exclude view-only access)
   const user = await require('../models/user.model').findById(req.user.userId).populate('permissions');
   if (!user) {
     return sendErrorResponse(res, 404, 'User not found');
   }
   
-  const hasAllAccess = hasAllQuotationAccess(user);
+  const hasViewOnly = hasAllQuotationViewerOnly(user);
   const canEdit = hasPermission(user, 'quotation_edit');
   
-  if (!hasAllAccess && !canEdit) {
-    return sendErrorResponse(res, 403, 'Insufficient permissions. Requires quotation_edit or all_quotation_viewer permission.');
+  if (hasViewOnly) {
+    return sendErrorResponse(res, 403, 'Insufficient permissions. View-only access cannot update quotation header.');
+  }
+  
+  if (!canEdit) {
+    return sendErrorResponse(res, 403, 'Insufficient permissions. Requires quotation_edit permission.');
   }
   
   try {
@@ -1550,6 +1587,11 @@ router.put('/*', extractQuotationNumber, authenticateToken, async (req, res, nex
     const updateData = req.body;
 
     const result = await getQuotationOffers(decodedNumber);
+    
+    // Check if user can modify this quotation (must be creator or admin)
+    if (!canModifyQuotation(user, result.header)) {
+      return sendErrorResponse(res, 403, 'Insufficient permissions. You can only modify quotations you created.');
+    }
 
     const updatedHeader = await updateQuotationHeader(result.header._id, updateData);
 
@@ -1567,17 +1609,21 @@ router.delete('/*', extractQuotationNumber, authenticateToken, async (req, res, 
     return next();
   }
   
-  // Check permissions: allow quotation_delete or all_quotation_viewer
+  // Check permissions: allow quotation_delete only (exclude view-only access)
   const user = await require('../models/user.model').findById(req.user.userId).populate('permissions');
   if (!user) {
     return sendErrorResponse(res, 404, 'User not found');
   }
   
-  const hasAllAccess = hasAllQuotationAccess(user);
+  const hasViewOnly = hasAllQuotationViewerOnly(user);
   const canDelete = hasPermission(user, 'quotation_delete');
   
-  if (!hasAllAccess && !canDelete) {
-    return sendErrorResponse(res, 403, 'Insufficient permissions. Requires quotation_delete or all_quotation_viewer permission.');
+  if (hasViewOnly) {
+    return sendErrorResponse(res, 403, 'Insufficient permissions. View-only access cannot delete quotations.');
+  }
+  
+  if (!canDelete) {
+    return sendErrorResponse(res, 403, 'Insufficient permissions. Requires quotation_delete permission.');
   }
   
   try {
@@ -1585,6 +1631,11 @@ router.delete('/*', extractQuotationNumber, authenticateToken, async (req, res, 
     const quotationNumber = req.extractedQuotationNumber || req.params[0] || req.params.quotationNumber;
     const decodedNumber = decodeURIComponent(quotationNumber);
     const result = await getQuotationOffers(decodedNumber);
+    
+    // Check if user can modify this quotation (must be creator or admin)
+    if (!canModifyQuotation(user, result.header)) {
+      return sendErrorResponse(res, 403, 'Insufficient permissions. You can only delete quotations you created.');
+    }
 
     // Collect all offer IDs for cleanup
     const offerIds = [];
@@ -1630,17 +1681,21 @@ const isValidRomanMonth = (value) => ROMAN_MONTHS.includes((value || '').toUpper
 
 // Update quotation status
 router.patch('/*/status', extractQuotationNumber, authenticateToken, async (req, res) => {
-  // Check permissions: allow quotation_edit or all_quotation_viewer
+  // Check permissions: allow quotation_edit only (exclude view-only access)
   const user = await require('../models/user.model').findById(req.user.userId).populate('permissions');
   if (!user) {
     return sendErrorResponse(res, 404, 'User not found');
   }
   
-  const hasAllAccess = hasAllQuotationAccess(user);
+  const hasViewOnly = hasAllQuotationViewerOnly(user);
   const canEdit = hasPermission(user, 'quotation_edit');
   
-  if (!hasAllAccess && !canEdit) {
-    return sendErrorResponse(res, 403, 'Insufficient permissions. Requires quotation_edit or all_quotation_viewer permission.');
+  if (hasViewOnly) {
+    return sendErrorResponse(res, 403, 'Insufficient permissions. View-only access cannot update quotation status.');
+  }
+  
+  if (!canEdit) {
+    return sendErrorResponse(res, 403, 'Insufficient permissions. Requires quotation_edit permission.');
   }
   
   try {
@@ -1711,6 +1766,11 @@ router.patch('/*/status', extractQuotationNumber, authenticateToken, async (req,
     } = req.body;
 
     const result = await getQuotationOffers(actualQuotationNumber);
+    
+    // Check if user can modify this quotation (must be creator or admin)
+    if (!canModifyQuotation(user, result.header)) {
+      return sendErrorResponse(res, 403, 'Insufficient permissions. You can only modify quotations you created.');
+    }
 
 
     // Validate reason for loss/close
@@ -1848,17 +1908,21 @@ router.get('/*/offers', extractQuotationNumber, authenticateToken, async (req, r
 
 // Create new offer for a quotation
 router.post('/*/offers', extractQuotationNumber, authenticateToken, async (req, res) => {
-  // Check permissions: allow quotation_edit or all_quotation_viewer
+  // Check permissions: allow quotation_edit only (exclude view-only access)
   const user = await require('../models/user.model').findById(req.user.userId).populate('permissions');
   if (!user) {
     return sendErrorResponse(res, 404, 'User not found');
   }
   
-  const hasAllAccess = hasAllQuotationAccess(user);
+  const hasViewOnly = hasAllQuotationViewerOnly(user);
   const canEdit = hasPermission(user, 'quotation_edit');
   
-  if (!hasAllAccess && !canEdit) {
-    return sendErrorResponse(res, 403, 'Insufficient permissions. Requires quotation_edit or all_quotation_viewer permission.');
+  if (hasViewOnly) {
+    return sendErrorResponse(res, 403, 'Insufficient permissions. View-only access cannot create offers.');
+  }
+  
+  if (!canEdit) {
+    return sendErrorResponse(res, 403, 'Insufficient permissions. Requires quotation_edit permission.');
   }
   
   try {
@@ -1880,6 +1944,11 @@ router.post('/*/offers', extractQuotationNumber, authenticateToken, async (req, 
     if (!header) {
       return sendErrorResponse(res, 404, 'Quotation not found');
     }
+    
+    // Check if user can modify this quotation (must be creator or admin)
+    if (!canModifyQuotation(user, header)) {
+      return sendErrorResponse(res, 403, 'Insufficient permissions. You can only modify quotations you created.');
+    }
 
     const offer = await createQuotationOffer(header.quotationNumber, {
       ...offerData,
@@ -1898,17 +1967,21 @@ router.post('/*/offers', extractQuotationNumber, authenticateToken, async (req, 
 
 // Update specific offer
 router.put('/*/offers/:offerId', extractQuotationNumber, authenticateToken, async (req, res) => {
-  // Check permissions: allow quotation_edit or all_quotation_viewer
+  // Check permissions: allow quotation_edit only (exclude view-only access)
   const user = await require('../models/user.model').findById(req.user.userId).populate('permissions');
   if (!user) {
     return sendErrorResponse(res, 404, 'User not found');
   }
   
-  const hasAllAccess = hasAllQuotationAccess(user);
+  const hasViewOnly = hasAllQuotationViewerOnly(user);
   const canEdit = hasPermission(user, 'quotation_edit');
   
-  if (!hasAllAccess && !canEdit) {
-    return sendErrorResponse(res, 403, 'Insufficient permissions. Requires quotation_edit or all_quotation_viewer permission.');
+  if (hasViewOnly) {
+    return sendErrorResponse(res, 403, 'Insufficient permissions. View-only access cannot update offers.');
+  }
+  
+  if (!canEdit) {
+    return sendErrorResponse(res, 403, 'Insufficient permissions. Requires quotation_edit permission.');
   }
   
   try {
@@ -1931,6 +2004,11 @@ router.put('/*/offers/:offerId', extractQuotationNumber, authenticateToken, asyn
     if (!header) {
       return sendErrorResponse(res, 404, 'Quotation not found');
     }
+    
+    // Check if user can modify this quotation (must be creator or admin)
+    if (!canModifyQuotation(user, header)) {
+      return sendErrorResponse(res, 403, 'Insufficient permissions. You can only modify quotations you created.');
+    }
 
     const updatedOffer = await updateQuotationOffer(offerId, updateData);
 
@@ -1943,17 +2021,21 @@ router.put('/*/offers/:offerId', extractQuotationNumber, authenticateToken, asyn
 
 // Delete specific offer
 router.delete('/*/offers/:offerId', extractQuotationNumber, authenticateToken, async (req, res) => {
-  // Check permissions: allow quotation_edit or all_quotation_viewer
+  // Check permissions: allow quotation_edit only (exclude view-only access)
   const user = await require('../models/user.model').findById(req.user.userId).populate('permissions');
   if (!user) {
     return sendErrorResponse(res, 404, 'User not found');
   }
   
-  const hasAllAccess = hasAllQuotationAccess(user);
+  const hasViewOnly = hasAllQuotationViewerOnly(user);
   const canEdit = hasPermission(user, 'quotation_edit');
   
-  if (!hasAllAccess && !canEdit) {
-    return sendErrorResponse(res, 403, 'Insufficient permissions. Requires quotation_edit or all_quotation_viewer permission.');
+  if (hasViewOnly) {
+    return sendErrorResponse(res, 403, 'Insufficient permissions. View-only access cannot delete offers.');
+  }
+  
+  if (!canEdit) {
+    return sendErrorResponse(res, 403, 'Insufficient permissions. Requires quotation_edit permission.');
   }
   
   try {
@@ -1974,6 +2056,11 @@ router.delete('/*/offers/:offerId', extractQuotationNumber, authenticateToken, a
     
     if (!header) {
       return sendErrorResponse(res, 404, 'Quotation not found');
+    }
+    
+    // Check if user can modify this quotation (must be creator or admin)
+    if (!canModifyQuotation(user, header)) {
+      return sendErrorResponse(res, 403, 'Insufficient permissions. You can only modify quotations you created.');
     }
 
     // Clean up orphaned notes images before deleting the offer
@@ -2035,17 +2122,21 @@ router.get('/*/offers/:offerId/items', extractQuotationNumber, authenticateToken
 
 // Create new item for a specific offer
 router.post('/*/offers/:offerId/items', extractQuotationNumber, authenticateToken, async (req, res) => {
-  // Check permissions: allow quotation_edit or all_quotation_viewer
+  // Check permissions: allow quotation_edit only (exclude view-only access)
   const user = await require('../models/user.model').findById(req.user.userId).populate('permissions');
   if (!user) {
     return sendErrorResponse(res, 404, 'User not found');
   }
   
-  const hasAllAccess = hasAllQuotationAccess(user);
+  const hasViewOnly = hasAllQuotationViewerOnly(user);
   const canEdit = hasPermission(user, 'quotation_edit');
   
-  if (!hasAllAccess && !canEdit) {
-    return sendErrorResponse(res, 403, 'Insufficient permissions. Requires quotation_edit or all_quotation_viewer permission.');
+  if (hasViewOnly) {
+    return sendErrorResponse(res, 403, 'Insufficient permissions. View-only access cannot create offer items.');
+  }
+  
+  if (!canEdit) {
+    return sendErrorResponse(res, 403, 'Insufficient permissions. Requires quotation_edit permission.');
   }
   
   try {
@@ -2056,6 +2147,11 @@ router.post('/*/offers/:offerId/items', extractQuotationNumber, authenticateToke
     const itemData = req.body;
 
     const result = await getQuotationOffers(decodedNumber);
+    
+    // Check if user can modify this quotation (must be creator or admin)
+    if (!canModifyQuotation(user, result.header)) {
+      return sendErrorResponse(res, 403, 'Insufficient permissions. You can only modify quotations you created.');
+    }
 
 
     // Get the next item number
@@ -2088,17 +2184,21 @@ router.post('/*/offers/:offerId/items', extractQuotationNumber, authenticateToke
 
 // Update specific offer item
 router.put('/*/offers/:offerId/items/:itemId', extractQuotationNumber, authenticateToken, async (req, res) => {
-  // Check permissions: allow quotation_edit or all_quotation_viewer
+  // Check permissions: allow quotation_edit only (exclude view-only access)
   const user = await require('../models/user.model').findById(req.user.userId).populate('permissions');
   if (!user) {
     return sendErrorResponse(res, 404, 'User not found');
   }
   
-  const hasAllAccess = hasAllQuotationAccess(user);
+  const hasViewOnly = hasAllQuotationViewerOnly(user);
   const canEdit = hasPermission(user, 'quotation_edit');
   
-  if (!hasAllAccess && !canEdit) {
-    return sendErrorResponse(res, 403, 'Insufficient permissions. Requires quotation_edit or all_quotation_viewer permission.');
+  if (hasViewOnly) {
+    return sendErrorResponse(res, 403, 'Insufficient permissions. View-only access cannot update offer items.');
+  }
+  
+  if (!canEdit) {
+    return sendErrorResponse(res, 403, 'Insufficient permissions. Requires quotation_edit permission.');
   }
   
   try {
@@ -2109,6 +2209,11 @@ router.put('/*/offers/:offerId/items/:itemId', extractQuotationNumber, authentic
     const updateData = req.body;
 
     const result = await getQuotationOffers(decodedNumber);
+    
+    // Check if user can modify this quotation (must be creator or admin)
+    if (!canModifyQuotation(user, result.header)) {
+      return sendErrorResponse(res, 403, 'Insufficient permissions. You can only modify quotations you created.');
+    }
 
 
     // Handle empty string for drawingSpecification
@@ -2142,17 +2247,21 @@ router.put('/*/offers/:offerId/items/:itemId', extractQuotationNumber, authentic
 
 // Delete specific offer item
 router.delete('/*/offers/:offerId/items/:itemId', extractQuotationNumber, authenticateToken, async (req, res) => {
-  // Check permissions: allow quotation_edit or all_quotation_viewer
+  // Check permissions: allow quotation_edit only (exclude view-only access)
   const user = await require('../models/user.model').findById(req.user.userId).populate('permissions');
   if (!user) {
     return sendErrorResponse(res, 404, 'User not found');
   }
   
-  const hasAllAccess = hasAllQuotationAccess(user);
+  const hasViewOnly = hasAllQuotationViewerOnly(user);
   const canEdit = hasPermission(user, 'quotation_edit');
   
-  if (!hasAllAccess && !canEdit) {
-    return sendErrorResponse(res, 403, 'Insufficient permissions. Requires quotation_edit or all_quotation_viewer permission.');
+  if (hasViewOnly) {
+    return sendErrorResponse(res, 403, 'Insufficient permissions. View-only access cannot delete offer items.');
+  }
+  
+  if (!canEdit) {
+    return sendErrorResponse(res, 403, 'Insufficient permissions. Requires quotation_edit permission.');
   }
   
   try {
@@ -2162,6 +2271,11 @@ router.delete('/*/offers/:offerId/items/:itemId', extractQuotationNumber, authen
     const { offerId, itemId } = req.params;
 
     const result = await getQuotationOffers(decodedNumber);
+    
+    // Check if user can modify this quotation (must be creator or admin)
+    if (!canModifyQuotation(user, result.header)) {
+      return sendErrorResponse(res, 403, 'Insufficient permissions. You can only modify quotations you created.');
+    }
 
     const offerItem = await OfferItem.findByIdAndDelete(itemId);
 
@@ -2184,17 +2298,21 @@ router.delete('/*/offers/:offerId/items/:itemId', extractQuotationNumber, authen
 
 // Toggle item acceptance status
 router.patch('/*/offers/:offerId/items/:itemId/accept', extractQuotationNumber, authenticateToken, async (req, res) => {
-  // Check permissions: allow quotation_edit or all_quotation_viewer
+  // Check permissions: allow quotation_edit only (exclude view-only access)
   const user = await require('../models/user.model').findById(req.user.userId).populate('permissions');
   if (!user) {
     return sendErrorResponse(res, 404, 'User not found');
   }
   
-  const hasAllAccess = hasAllQuotationAccess(user);
+  const hasViewOnly = hasAllQuotationViewerOnly(user);
   const canEdit = hasPermission(user, 'quotation_edit');
   
-  if (!hasAllAccess && !canEdit) {
-    return sendErrorResponse(res, 403, 'Insufficient permissions. Requires quotation_edit or all_quotation_viewer permission.');
+  if (hasViewOnly) {
+    return sendErrorResponse(res, 403, 'Insufficient permissions. View-only access cannot toggle item acceptance.');
+  }
+  
+  if (!canEdit) {
+    return sendErrorResponse(res, 403, 'Insufficient permissions. Requires quotation_edit permission.');
   }
   
   try {
@@ -2204,6 +2322,11 @@ router.patch('/*/offers/:offerId/items/:itemId/accept', extractQuotationNumber, 
     const { offerId, itemId } = req.params;
 
     const result = await getQuotationOffers(decodedNumber);
+    
+    // Check if user can modify this quotation (must be creator or admin)
+    if (!canModifyQuotation(user, result.header)) {
+      return sendErrorResponse(res, 403, 'Insufficient permissions. You can only modify quotations you created.');
+    }
 
 
     const offerItem = await OfferItem.findById(itemId);
@@ -2243,17 +2366,21 @@ router.patch('/*/offers/:offerId/items/:itemId/accept', extractQuotationNumber, 
 
 // Add progress entry to quotation
 router.post('/*/progress', extractQuotationNumber, authenticateToken, async (req, res) => {
-  // Check permissions: allow quotation_edit or all_quotation_viewer
+  // Check permissions: allow quotation_edit only (exclude view-only access)
   const user = await require('../models/user.model').findById(req.user.userId).populate('permissions');
   if (!user) {
     return sendErrorResponse(res, 404, 'User not found');
   }
   
-  const hasAllAccess = hasAllQuotationAccess(user);
+  const hasViewOnly = hasAllQuotationViewerOnly(user);
   const canEdit = hasPermission(user, 'quotation_edit');
   
-  if (!hasAllAccess && !canEdit) {
-    return sendErrorResponse(res, 403, 'Insufficient permissions. Requires quotation_edit or all_quotation_viewer permission.');
+  if (hasViewOnly) {
+    return sendErrorResponse(res, 403, 'Insufficient permissions. View-only access cannot add progress.');
+  }
+  
+  if (!canEdit) {
+    return sendErrorResponse(res, 403, 'Insufficient permissions. Requires quotation_edit permission.');
   }
   
   try {
@@ -2263,6 +2390,11 @@ router.post('/*/progress', extractQuotationNumber, authenticateToken, async (req
     const { progress } = req.body;
 
     const result = await getQuotationOffers(decodedNumber);
+    
+    // Check if user can modify this quotation (must be creator or admin)
+    if (!canModifyQuotation(user, result.header)) {
+      return sendErrorResponse(res, 403, 'Insufficient permissions. You can only modify quotations you created.');
+    }
 
     const updatedHeader = await updateQuotationHeader(result.header._id, {
       $push: { progress: progress }
@@ -2277,17 +2409,21 @@ router.post('/*/progress', extractQuotationNumber, authenticateToken, async (req
 
 // Delete progress entry from quotation
 router.delete('/*/progress/:index', extractQuotationNumber, authenticateToken, async (req, res) => {
-  // Check permissions: allow quotation_edit or all_quotation_viewer
+  // Check permissions: allow quotation_edit only (exclude view-only access)
   const user = await require('../models/user.model').findById(req.user.userId).populate('permissions');
   if (!user) {
     return sendErrorResponse(res, 404, 'User not found');
   }
   
-  const hasAllAccess = hasAllQuotationAccess(user);
+  const hasViewOnly = hasAllQuotationViewerOnly(user);
   const canEdit = hasPermission(user, 'quotation_edit');
   
-  if (!hasAllAccess && !canEdit) {
-    return sendErrorResponse(res, 403, 'Insufficient permissions. Requires quotation_edit or all_quotation_viewer permission.');
+  if (hasViewOnly) {
+    return sendErrorResponse(res, 403, 'Insufficient permissions. View-only access cannot delete progress entries.');
+  }
+  
+  if (!canEdit) {
+    return sendErrorResponse(res, 403, 'Insufficient permissions. Requires quotation_edit permission.');
   }
   
   try {
@@ -2302,6 +2438,11 @@ router.delete('/*/progress/:index', extractQuotationNumber, authenticateToken, a
     }
 
     const result = await getQuotationOffers(decodedNumber);
+    
+    // Check if user can modify this quotation (must be creator or admin)
+    if (!canModifyQuotation(user, result.header)) {
+      return sendErrorResponse(res, 403, 'Insufficient permissions. You can only modify quotations you created.');
+    }
     const currentProgress = Array.isArray(result.header.progress) ? [...result.header.progress] : [];
 
     if (progressIndex >= currentProgress.length) {
@@ -2326,17 +2467,21 @@ router.delete('/*/progress/:index', extractQuotationNumber, authenticateToken, a
 
 // Update progress entry
 router.put('/*/progress/:index', extractQuotationNumber, authenticateToken, async (req, res) => {
-  // Check permissions: allow quotation_edit or all_quotation_viewer
+  // Check permissions: allow quotation_edit only (exclude view-only access)
   const user = await require('../models/user.model').findById(req.user.userId).populate('permissions');
   if (!user) {
     return sendErrorResponse(res, 404, 'User not found');
   }
   
-  const hasAllAccess = hasAllQuotationAccess(user);
+  const hasViewOnly = hasAllQuotationViewerOnly(user);
   const canEdit = hasPermission(user, 'quotation_edit');
   
-  if (!hasAllAccess && !canEdit) {
-    return sendErrorResponse(res, 403, 'Insufficient permissions. Requires quotation_edit or all_quotation_viewer permission.');
+  if (hasViewOnly) {
+    return sendErrorResponse(res, 403, 'Insufficient permissions. View-only access cannot update progress.');
+  }
+  
+  if (!canEdit) {
+    return sendErrorResponse(res, 403, 'Insufficient permissions. Requires quotation_edit permission.');
   }
   
   try {
@@ -2357,6 +2502,11 @@ router.put('/*/progress/:index', extractQuotationNumber, authenticateToken, asyn
     }
 
     const result = await getQuotationOffers(decodedNumber);
+    
+    // Check if user can modify this quotation (must be creator or admin)
+    if (!canModifyQuotation(user, result.header)) {
+      return sendErrorResponse(res, 403, 'Insufficient permissions. You can only modify quotations you created.');
+    }
     const currentProgress = Array.isArray(result.header.progress) ? [...result.header.progress] : [];
 
     if (progressIndex >= currentProgress.length) {
@@ -2382,23 +2532,32 @@ router.put('/*/progress/:index', extractQuotationNumber, authenticateToken, asyn
 
 // Update last follow-up date
 router.patch('/:quotationNumber/follow-up', authenticateToken, async (req, res) => {
-  // Check permissions: allow quotation_edit or all_quotation_viewer
+  // Check permissions: allow quotation_edit only (exclude view-only access)
   const user = await require('../models/user.model').findById(req.user.userId).populate('permissions');
   if (!user) {
     return sendErrorResponse(res, 404, 'User not found');
   }
   
-  const hasAllAccess = hasAllQuotationAccess(user);
+  const hasViewOnly = hasAllQuotationViewerOnly(user);
   const canEdit = hasPermission(user, 'quotation_edit');
   
-  if (!hasAllAccess && !canEdit) {
-    return sendErrorResponse(res, 403, 'Insufficient permissions. Requires quotation_edit or all_quotation_viewer permission.');
+  if (hasViewOnly) {
+    return sendErrorResponse(res, 403, 'Insufficient permissions. View-only access cannot update follow-up date.');
+  }
+  
+  if (!canEdit) {
+    return sendErrorResponse(res, 403, 'Insufficient permissions. Requires quotation_edit permission.');
   }
   
   try {
     const { quotationNumber } = req.params;
 
     const result = await getQuotationOffers(quotationNumber);
+    
+    // Check if user can modify this quotation (must be creator or admin)
+    if (!canModifyQuotation(user, result.header)) {
+      return sendErrorResponse(res, 403, 'Insufficient permissions. You can only modify quotations you created.');
+    }
 
 
     const updatedHeader = await updateLastFollowUp(result.header._id);
@@ -2478,17 +2637,21 @@ router.post('/migrate/offer-numbers', authenticateToken, authorize('admin'), asy
 
 // Rebuild broken quotation
 router.post('/*/rebuild', extractQuotationNumber, authenticateToken, async (req, res) => {
-  // Check permissions: allow quotation_edit or all_quotation_viewer
+  // Check permissions: allow quotation_edit only (exclude view-only access)
   const user = await require('../models/user.model').findById(req.user.userId).populate('permissions');
   if (!user) {
     return sendErrorResponse(res, 404, 'User not found');
   }
   
-  const hasAllAccess = hasAllQuotationAccess(user);
+  const hasViewOnly = hasAllQuotationViewerOnly(user);
   const canEdit = hasPermission(user, 'quotation_edit');
   
-  if (!hasAllAccess && !canEdit) {
-    return sendErrorResponse(res, 403, 'Insufficient permissions. Requires quotation_edit or all_quotation_viewer permission.');
+  if (hasViewOnly) {
+    return sendErrorResponse(res, 403, 'Insufficient permissions. View-only access cannot rebuild quotations.');
+  }
+  
+  if (!canEdit) {
+    return sendErrorResponse(res, 403, 'Insufficient permissions. Requires quotation_edit permission.');
   }
   
   try {
@@ -2533,6 +2696,11 @@ router.post('/*/rebuild', extractQuotationNumber, authenticateToken, async (req,
     const header = await QuotationHeader.findOne({ quotationNumber: actualQuotationNumber });
     if (!header) {
       return sendErrorResponse(res, 404, 'Quotation not found');
+    }
+    
+    // Check if user can modify this quotation (must be creator or admin)
+    if (!canModifyQuotation(user, header)) {
+      return sendErrorResponse(res, 403, 'Insufficient permissions. You can only rebuild quotations you created.');
     }
     
     // Convert header to plain object before deletion to preserve all data

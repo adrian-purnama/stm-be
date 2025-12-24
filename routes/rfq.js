@@ -19,7 +19,7 @@ const { authenticateToken, authorize } = require('../middleware/auth');
 const { sendSuccessResponse, sendErrorResponse } = require('../utils/errorHandler');
 const { addNotification } = require('../utils/notificationHelper');
 const { sendRFQNotificationEmail } = require('../utils/emailUtils');
-const { hasPermission, hasAnyPermission, isSuperAdmin, hasAllQuotationAccess } = require('../utils/permissionHelper');
+const { hasPermission, hasAnyPermission, isSuperAdmin, hasAllQuotationAccess, hasAllQuotationViewerOnly } = require('../utils/permissionHelper');
 const {
   createRFQ,
   getRFQById,
@@ -643,17 +643,21 @@ router.get('/engineers', authenticateToken, async (req, res) => {
  */
 router.post('/', authenticateToken, async (req, res) => {
   try {
-    // Check permissions: allow quotation_requester or all_quotation_viewer
+    // Check permissions: allow quotation_requester only (exclude view-only access)
     const user = await User.findById(req.user.userId).populate('permissions');
     if (!user) {
       return sendErrorResponse(res, 404, 'User not found');
     }
     
-    const hasAllAccess = hasAllQuotationAccess(user);
+    const hasViewOnly = hasAllQuotationViewerOnly(user);
     const canRequest = hasPermission(user, 'quotation_requester');
     
-    if (!hasAllAccess && !canRequest) {
-      return sendErrorResponse(res, 403, 'Insufficient permissions. Requires quotation_requester or all_quotation_viewer permission.');
+    if (hasViewOnly) {
+      return sendErrorResponse(res, 403, 'Insufficient permissions. View-only access cannot create RFQs.');
+    }
+    
+    if (!canRequest) {
+      return sendErrorResponse(res, 403, 'Insufficient permissions. Requires quotation_requester permission.');
     }
     
     const { 
@@ -1853,12 +1857,16 @@ router.patch('/:id', authenticateToken, async (req, res) => {
     const rfq = await RFQ.findById(id);
     if (!rfq) return sendErrorResponse(res, 404, 'RFQ not found');
     const user = await User.findById(userId).populate('permissions');
-    const hasAllAccess = hasAllQuotationAccess(user);
+    const hasViewOnly = hasAllQuotationViewerOnly(user);
     const canCreateQuotation = hasPermission(user, 'quotation_create');
     const isRequester = rfq.requesterId && rfq.requesterId.toString() === userId.toString();
     const isQuotationCreator = rfq.quotationCreatorId && rfq.quotationCreatorId.toString() === userId.toString();
 
-    if (!hasAllAccess && !isRequester && !isQuotationCreator && !canCreateQuotation) {
+    if (hasViewOnly) {
+      return sendErrorResponse(res, 403, 'Insufficient permissions. View-only access cannot edit RFQs.');
+    }
+
+    if (!isRequester && !isQuotationCreator && !canCreateQuotation) {
       return sendErrorResponse(res, 403, 'Not authorized to edit this RFQ');
     }
 
