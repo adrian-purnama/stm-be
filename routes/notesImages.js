@@ -19,16 +19,27 @@ const upload = multer({
     fileSize: 10 * 1024 * 1024, // 10MB limit
   },
   fileFilter: (req, file, cb) => {
-    // Only allow image files
-    if (file.mimetype.startsWith('image/')) {
+    // Allow image files and common document types
+    const allowedMimeTypes = [
+      'image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp',
+      'application/pdf',
+      'application/msword', // .doc
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document', // .docx
+      'application/vnd.ms-excel', // .xls
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', // .xlsx
+      'text/plain', // .txt
+      'text/csv' // .csv
+    ];
+    
+    if (allowedMimeTypes.includes(file.mimetype)) {
       cb(null, true);
     } else {
-      cb(new Error('Only image files are allowed'), false);
+      cb(new Error('File type not allowed. Allowed types: Images (JPG, PNG, GIF, WEBP), PDF, DOC, DOCX, XLS, XLSX, TXT, CSV'), false);
     }
   }
 });
 
-// Upload notes image (standalone)
+// Upload notes image or document (standalone)
 router.post('/upload', authenticateToken, authorize(['placeholder_test']), upload.single('image'), async (req, res) => {
   try {
     const userId = req.user.id;
@@ -36,61 +47,90 @@ router.post('/upload', authenticateToken, authorize(['placeholder_test']), uploa
     if (!req.file) {
       return res.status(400).json({
         success: false,
-        message: 'No image file provided'
+        message: 'No file provided'
       });
     }
 
-    // Optimize image before uploading
-    let optimizedImageBuffer;
-    let originalImageSize;
-    let optimizedImageSize;
+    const isImage = req.file.mimetype.startsWith('image/');
+    let fileBuffer = req.file.buffer;
+    let originalFileSize = req.file.size;
+    let optimizedFileSize = req.file.size;
+    let isOptimized = false;
+
+    // Only optimize images, not documents
+    if (isImage) {
+      try {
+        console.log('[Upload] Optimizing notes image:', req.file.originalname, `(${req.file.size} bytes)`);
+        const optimizationResult = await optimizeImageAggressive(req.file.buffer);
+        fileBuffer = optimizationResult.optimized;
+        originalFileSize = optimizationResult.originalSize;
+        optimizedFileSize = optimizationResult.optimizedSize;
+        isOptimized = true;
+        
+        console.log('[Upload] Image optimization result:', {
+          original: `${(originalFileSize / 1024).toFixed(2)} KB`,
+          optimized: `${(optimizedFileSize / 1024).toFixed(2)} KB`,
+          reduction: `${optimizationResult.ratio}%`,
+          dimensions: `${optimizationResult.originalDimensions.width}x${optimizationResult.originalDimensions.height} → ${optimizationResult.optimizedDimensions.width}x${optimizationResult.optimizedDimensions.height}`
+        });
+      } catch (optimizationError) {
+        console.error('[Upload] Image optimization failed:', optimizationError.message);
+        return res.status(400).json({
+          success: false,
+          message: `Image optimization failed: ${optimizationError.message}`
+        });
+      }
+    }
+
+    // Determine file type and category
+    const mimeType = req.file.mimetype;
+    let fileType = mimeType.split('/')[1]?.toUpperCase();
+    let fileCategory = isImage ? 'image' : 'document';
     
-    try {
-      console.log('[Upload] Optimizing notes image:', req.file.originalname, `(${req.file.size} bytes)`);
-      const optimizationResult = await optimizeImageAggressive(req.file.buffer);
-      optimizedImageBuffer = optimizationResult.optimized;
-      originalImageSize = optimizationResult.originalSize;
-      optimizedImageSize = optimizationResult.optimizedSize;
-      
-      console.log('[Upload] Image optimization result:', {
-        original: `${(originalImageSize / 1024).toFixed(2)} KB`,
-        optimized: `${(optimizedImageSize / 1024).toFixed(2)} KB`,
-        reduction: `${optimizationResult.ratio}%`,
-        dimensions: `${optimizationResult.originalDimensions.width}x${optimizationResult.originalDimensions.height} → ${optimizationResult.optimizedDimensions.width}x${optimizationResult.optimizedDimensions.height}`
-      });
-    } catch (optimizationError) {
-      console.error('[Upload] Image optimization failed:', optimizationError.message);
-      return res.status(400).json({
-        success: false,
-        message: `Image optimization failed: ${optimizationError.message}`
-      });
+    // Handle special cases for file types
+    if (mimeType === 'application/pdf') {
+      fileType = 'PDF';
+    } else if (mimeType === 'application/msword') {
+      fileType = 'DOC';
+    } else if (mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
+      fileType = 'DOCX';
+    } else if (mimeType === 'application/vnd.ms-excel') {
+      fileType = 'XLS';
+    } else if (mimeType === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet') {
+      fileType = 'XLSX';
+    } else if (mimeType === 'text/plain') {
+      fileType = 'TXT';
+    } else if (mimeType === 'text/csv') {
+      fileType = 'CSV';
     }
 
-    // Upload optimized file to GridFS
+    // Upload file to GridFS
     const uploadResult = await notesImagesGridFS.uploadBuffer(
-      optimizedImageBuffer,
+      fileBuffer,
       req.file.originalname,
       {
         originalName: req.file.originalname,
         uploadedBy: userId,
-        type: 'notes-image',
-        originalFileSize: originalImageSize,
-        optimizedFileSize: optimizedImageSize,
-        isOptimized: true
+        type: 'notes-attachment',
+        originalFileSize: originalFileSize,
+        optimizedFileSize: isOptimized ? optimizedFileSize : undefined,
+        isOptimized: isOptimized
       },
-      req.file.mimetype // Pass the content type
+      mimeType // Pass the content type
     );
 
-    // Create notes image record
+    // Create notes image/document record
     const notesImageData = {
       imageFile: {
         fileId: uploadResult.fileId,
         filename: uploadResult.filename,
         originalName: req.file.originalname,
-        fileType: req.file.mimetype.split('/')[1].toUpperCase(),
-        fileSize: optimizedImageSize, // Store optimized size
-        originalFileSize: originalImageSize,
-        isOptimized: true,
+        fileType: fileType,
+        fileCategory: fileCategory,
+        mimeType: mimeType,
+        fileSize: optimizedFileSize,
+        originalFileSize: originalFileSize,
+        isOptimized: isOptimized,
         uploadDate: new Date()
       }
     };
@@ -120,15 +160,15 @@ router.post('/upload', authenticateToken, authorize(['placeholder_test']), uploa
 
     res.status(201).json({
       success: true,
-      message: 'Notes image uploaded successfully',
+      message: isImage ? 'Notes image uploaded successfully' : 'Document uploaded successfully',
       data: responseData
     });
 
   } catch (error) {
-    console.error('Error uploading notes image:', error);
+    console.error('Error uploading file:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to upload notes image',
+      message: 'Failed to upload file',
       error: error.message
     });
   }
@@ -348,8 +388,8 @@ router.delete('/offer/:offerId/remove/:imageId', authenticateToken, authorize(['
     res.json({
       success: true,
       message: deletionResult === 'deleted_entirely' 
-        ? 'Notes image removed from offer and deleted (not used elsewhere)'
-        : 'Notes image removed from offer (still used in other offers)',
+        ? 'File removed from offer and deleted (not used elsewhere)'
+        : 'File removed from offer (still used in other offers)',
       data: {
         deletionResult,
         stillUsedInOffers: offersUsingImage,
@@ -361,7 +401,7 @@ router.delete('/offer/:offerId/remove/:imageId', authenticateToken, authorize(['
     console.error('Error removing notes image from offer:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to remove notes image from offer',
+      message: 'Failed to remove file from offer',
       error: error.message
     });
   }
@@ -381,11 +421,22 @@ router.put('/:imageId/files/:fileId/replace', authenticateToken, authorize(['pla
       });
     }
 
-    // Validate it's an image file
-    if (!file.mimetype.startsWith('image/')) {
+    // Validate it's an allowed file type (image or document)
+    const allowedMimeTypes = [
+      'image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp',
+      'application/pdf',
+      'application/msword',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'application/vnd.ms-excel',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'text/plain',
+      'text/csv'
+    ];
+    
+    if (!allowedMimeTypes.includes(file.mimetype)) {
       return res.status(400).json({
         success: false,
-        message: 'Only image files are allowed for notes images'
+        message: 'File type not allowed. Allowed types: Images (JPG, PNG, GIF, WEBP), PDF, DOC, DOCX, XLS, XLSX, TXT, CSV'
       });
     }
 
@@ -413,18 +464,63 @@ router.put('/:imageId/files/:fileId/replace', authenticateToken, authorize(['pla
       });
     }
 
+    const isImage = file.mimetype.startsWith('image/');
+    let fileBuffer = file.buffer;
+    let originalFileSize = file.size;
+    let optimizedFileSize = file.size;
+    let isOptimized = false;
+
+    // Only optimize images, not documents
+    if (isImage) {
+      try {
+        const optimizationResult = await optimizeImageAggressive(file.buffer);
+        fileBuffer = optimizationResult.optimized;
+        originalFileSize = optimizationResult.originalSize;
+        optimizedFileSize = optimizationResult.optimizedSize;
+        isOptimized = true;
+      } catch (optimizationError) {
+        console.error('[Replace] Image optimization failed:', optimizationError.message);
+        // Continue with original file if optimization fails
+      }
+    }
+
+    // Determine file type and category
+    const mimeType = file.mimetype;
+    let fileType = mimeType.split('/')[1]?.toUpperCase();
+    let fileCategory = isImage ? 'image' : 'document';
+    
+    // Handle special cases for file types
+    if (mimeType === 'application/pdf') {
+      fileType = 'PDF';
+    } else if (mimeType === 'application/msword') {
+      fileType = 'DOC';
+    } else if (mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
+      fileType = 'DOCX';
+    } else if (mimeType === 'application/vnd.ms-excel') {
+      fileType = 'XLS';
+    } else if (mimeType === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet') {
+      fileType = 'XLSX';
+    } else if (mimeType === 'text/plain') {
+      fileType = 'TXT';
+    } else if (mimeType === 'text/csv') {
+      fileType = 'CSV';
+    }
+
     // Replace file using GridFS helper
     const replaceResult = await notesImagesGridFS.replaceFile(
       fileId,
-      file.buffer,
+      fileBuffer,
       `${imageId}_${Date.now()}_${file.originalname}`,
       {
         originalName: file.originalname,
         uploadedBy: userId,
-        type: 'notes-image',
+        type: 'notes-attachment',
+        originalFileSize: originalFileSize,
+        optimizedFileSize: isOptimized ? optimizedFileSize : undefined,
+        isOptimized: isOptimized,
         replacedAt: new Date()
       },
-      file.mimetype
+      mimeType
     );
 
     // Delete old file
@@ -435,8 +531,12 @@ router.put('/:imageId/files/:fileId/replace', authenticateToken, authorize(['pla
       fileId: replaceResult.newFile.fileId,
       filename: replaceResult.newFile.filename,
       originalName: file.originalname,
-      fileType: file.mimetype.split('/')[1].toUpperCase(),
-      fileSize: file.size,
+      fileType: fileType,
+      fileCategory: fileCategory,
+      mimeType: mimeType,
+      fileSize: optimizedFileSize,
+      originalFileSize: originalFileSize,
+      isOptimized: isOptimized,
       uploadDate: replaceResult.newFile.uploadDate
     };
 
@@ -445,7 +545,7 @@ router.put('/:imageId/files/:fileId/replace', authenticateToken, authorize(['pla
 
     res.json({
       success: true,
-      message: 'Notes image replaced successfully',
+      message: 'File replaced successfully',
       data: {
         oldFileId: fileId,
         newFile: notesImage.imageFile
@@ -456,7 +556,7 @@ router.put('/:imageId/files/:fileId/replace', authenticateToken, authorize(['pla
     console.error('Error replacing notes image file:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to replace notes image',
+      message: 'Failed to replace file',
       error: error.message
     });
   }
@@ -494,7 +594,7 @@ router.delete('/:imageId', authenticateToken, authorize(['placeholder_test']), a
       // Image is used in other offers - don't delete, just return info
       res.json({
         success: false,
-        message: 'Cannot delete image - it is used in other offers',
+        message: 'Cannot delete file - it is used in other offers',
         data: {
           imageId,
           usedInOffers: offersUsingImage,
@@ -513,14 +613,14 @@ router.delete('/:imageId', authenticateToken, authorize(['placeholder_test']), a
 
     res.json({
       success: true,
-      message: 'Notes image deleted successfully (not used in other offers)'
+      message: 'File deleted successfully (not used in other offers)'
     });
 
   } catch (error) {
     console.error('Error deleting notes image:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to delete notes image',
+      message: 'Failed to delete file',
       error: error.message
     });
   }

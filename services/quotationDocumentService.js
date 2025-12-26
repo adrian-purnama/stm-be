@@ -1073,8 +1073,7 @@ const extractImagesFromPDF = async (pdfBuffer, mode = 'pages') => {
     const apiUrl = 'https://libreoffice.amfphub.com';
     const apiKey = process.env.LIBREOFFICE_API_KEY || 'adriangacor';
     
-    // Use mode=pages&format=png to convert all PDF pages to PNG images
-    const response = await fetch(`${apiUrl}/pdf-images?mode=${mode}&format=png`, {
+    const response = await fetch(`${apiUrl}/pdf-images?mode=${mode}`, {
       method: 'POST',
       headers: {
         'X-API-KEY': apiKey,
@@ -1151,9 +1150,10 @@ const fetchDrawingImageAsBase64 = async (drawingId, fileId, quotationImageMetada
     );
     
     if (isPDF) {
-      // Extract images from PDF using mode=pages&format=png (converts all PDF pages to PNG images)
+      // Extract images from PDF
       console.log(`[PDF Extraction] Extracting images from PDF for drawing ${drawingId}`);
-      // Use 'pages' mode with format=png to convert all PDF pages to PNG images
+      // Try 'pages' mode first (converts each page to PNG)
+      // If that doesn't return multiple pages, try 'extract' mode
       let imageBuffers = await extractImagesFromPDF(fileBuffer, 'pages');
       
       // If we only got 1 image but PDF might have multiple pages, try 'extract' mode

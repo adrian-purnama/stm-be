@@ -235,7 +235,16 @@ router.get('/notes-images/:imageId/files/:fileId', async (req, res) => {
       });
     }
     
-    // Get file metadata first
+    // Get NotesImage document to access file metadata (mimeType, fileCategory, etc.)
+    const notesImage = await NotesImage.findById(imageId);
+    if (!notesImage) {
+      return res.status(404).json({
+        success: false,
+        message: 'Notes attachment not found'
+      });
+    }
+    
+    // Get file metadata from GridFS
     const fileMetadata = await notesImagesGridFS.getFileMetadata(objectId);
     if (!fileMetadata) {
       return res.status(404).json({
@@ -244,28 +253,29 @@ router.get('/notes-images/:imageId/files/:fileId', async (req, res) => {
       });
     }
     
+    // Use mimeType from NotesImage model if available, otherwise fall back to metadata or filename
+    const mimeType = notesImage.imageFile?.mimeType || 
+                     fileMetadata.contentType || 
+                     fileMetadata.metadata?.contentType ||
+                     getContentType(fileMetadata.filename || notesImage.imageFile?.originalName || '');
     
-    // Check if it's an image file - be more flexible with content type validation
-    const contentType = fileMetadata.contentType || fileMetadata.metadata?.contentType;
-    const filename = fileMetadata.filename || fileMetadata.metadata?.filename || fileMetadata.metadata?.originalName || '';
-    const isImageByContentType = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'].includes(contentType);
-    const isImageByExtension = /\.(jpg|jpeg|png|gif|webp)$/i.test(filename);
-    const isImage = isImageByContentType || isImageByExtension;
+    const filename = notesImage.imageFile?.originalName || 
+                     fileMetadata.metadata?.originalName || 
+                     fileMetadata.filename || 
+                     'file';
     
-    if (!isImage) {
-      return res.status(400).json({
-        success: false,
-        message: 'File is not an image'
-      });
-    }
+    // Check if this is a download request (has download query parameter)
+    const isDownload = req.query.download === 'true';
+    const disposition = isDownload ? 'attachment' : 'inline';
     
     // Update lastAccessed for notes image
     await NotesImage.findByIdAndUpdate(imageId, { lastAccessed: new Date() });
     
     // Set appropriate headers
     res.set({
-      'Content-Type': contentType || 'application/octet-stream',
+      'Content-Type': mimeType || 'application/octet-stream',
       'Content-Length': fileMetadata.length,
+      'Content-Disposition': `${disposition}; filename="${encodeURIComponent(filename)}"`,
       'Cache-Control': 'public, max-age=3600', // Cache for 1 hour
       'Last-Modified': fileMetadata.uploadDate.toUTCString()
     });

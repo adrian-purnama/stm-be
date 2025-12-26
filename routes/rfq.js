@@ -19,7 +19,7 @@ const { authenticateToken, authorize } = require('../middleware/auth');
 const { sendSuccessResponse, sendErrorResponse } = require('../utils/errorHandler');
 const { addNotification } = require('../utils/notificationHelper');
 const { sendRFQNotificationEmail } = require('../utils/emailUtils');
-const { hasPermission, hasAnyPermission, isSuperAdmin, hasAllQuotationAccess, hasAllQuotationViewerOnly } = require('../utils/permissionHelper');
+const { hasPermission, hasAnyPermission, isSuperAdmin } = require('../utils/permissionHelper');
 const {
   createRFQ,
   getRFQById,
@@ -454,7 +454,6 @@ router.get('/', authenticateToken, async (req, res) => {
     }
 
     const isAdminUser = isSuperAdmin(user) || hasAnyPermission(user, ['quotation_admin', 'admin', 'system_admin']);
-    const hasAllAccess = hasAllQuotationAccess(user);
     const canApprove = hasPermission(user, 'approve_rfq');
     const canEngineer = hasPermission(user, 'engineer_review');
     const canRequest = hasPermission(user, 'quotation_requester');
@@ -480,17 +479,11 @@ router.get('/', authenticateToken, async (req, res) => {
       }
     }
 
-    // Track if scope was explicitly provided
-    const explicitScope = viewScopeRaw && viewScopeRaw.trim() !== '';
-    
     if (!scope) {
       scope = 'requester';
     }
 
-    // If user has all_quotation_viewer, bypass scope filtering to show all RFQs
-    // UNLESS an explicit scope was provided (e.g., 'requester' from RequestQuotationTab)
-    // This allows RequestQuotationTab to always show only user's own RFQs
-    const shouldApplyScopeFilter = explicitScope || (!hasAllAccess && (!isAdminUser || scope === 'engineer'));
+    const shouldApplyScopeFilter = !isAdminUser || scope === 'engineer';
 
     if (shouldApplyScopeFilter) {
       const scopePermissionMap = {
@@ -638,28 +631,11 @@ router.get('/engineers', authenticateToken, async (req, res) => {
 // POST /api/rfq - create new RFQ
 /**
  * POST /api/rfq
- * Permission: quotation_requester or all_quotation_viewer
+ * Permission: quotation_requester
  * Description: Create a new RFQ
  */
-router.post('/', authenticateToken, async (req, res) => {
+router.post('/', authenticateToken, authorize(['quotation_requester']), async (req, res) => {
   try {
-    // Check permissions: allow quotation_requester only (exclude view-only access)
-    const user = await User.findById(req.user.userId).populate('permissions');
-    if (!user) {
-      return sendErrorResponse(res, 404, 'User not found');
-    }
-    
-    const hasViewOnly = hasAllQuotationViewerOnly(user);
-    const canRequest = hasPermission(user, 'quotation_requester');
-    
-    if (hasViewOnly) {
-      return sendErrorResponse(res, 403, 'Insufficient permissions. View-only access cannot create RFQs.');
-    }
-    
-    if (!canRequest) {
-      return sendErrorResponse(res, 403, 'Insufficient permissions. Requires quotation_requester permission.');
-    }
-    
     const { 
       approverId,
       engineeringId,
@@ -1553,11 +1529,10 @@ router.get('/:id/items', authenticateToken, async (req, res) => {
     
     // Check permissions
     const user = await User.findById(userId).populate('permissions');
-    const hasAllAccess = hasAllQuotationAccess(user);
     const canApprove = hasPermission(user, 'approve_rfq');
     const canCreateQuotation = hasPermission(user, 'quotation_create');
     
-    const hasAccess = hasAllAccess || (
+    const hasAccess = (
       rfq.requesterId.toString() === userId.toString() ||
       (canApprove && rfq.approverId.toString() === userId.toString()) ||
       (canCreateQuotation && rfq.quotationCreatorId.toString() === userId.toString())
@@ -1689,12 +1664,11 @@ router.get('/by-quotation/:quotationNumber', authenticateToken, async (req, res)
       return sendErrorResponse(res, 404, 'User not found');
     }
 
-    const hasAllAccess = hasAllQuotationAccess(user);
     const canApprove = hasPermission(user, 'approve_rfq');
     const canCreateQuotation = hasPermission(user, 'quotation_create');
     const canRequestQuotation = hasPermission(user, 'quotation_requester');
 
-    const hasAccess = hasAllAccess ||
+    const hasAccess =
       rfq.requesterId.toString() === userId.toString() ||
       (canApprove && rfq.approverId && rfq.approverId.toString() === userId.toString()) ||
       (canCreateQuotation && rfq.quotationCreatorId && rfq.quotationCreatorId.toString() === userId.toString());
@@ -1719,14 +1693,13 @@ router.get('/:id', authenticateToken, async (req, res) => {
     
     // Check if user has access to this RFQ
     const user = await User.findById(userId).populate('permissions');
-    const hasAllAccess = hasAllQuotationAccess(user);
     const canApprove = hasPermission(user, 'approve_rfq');
     const canCreateQuotation = hasPermission(user, 'quotation_create');
     const canRequestQuotation = hasPermission(user, 'quotation_requester');
     
     const rfq = await getRFQById(id);
     
-    const hasAccess = hasAllAccess || (
+    const hasAccess = (
       rfq.requesterId._id.toString() === userId.toString() ||
       (canApprove && rfq.approverId._id.toString() === userId.toString()) ||
       (canCreateQuotation && rfq.quotationCreatorId._id.toString() === userId.toString())
@@ -1857,14 +1830,9 @@ router.patch('/:id', authenticateToken, async (req, res) => {
     const rfq = await RFQ.findById(id);
     if (!rfq) return sendErrorResponse(res, 404, 'RFQ not found');
     const user = await User.findById(userId).populate('permissions');
-    const hasViewOnly = hasAllQuotationViewerOnly(user);
     const canCreateQuotation = hasPermission(user, 'quotation_create');
     const isRequester = rfq.requesterId && rfq.requesterId.toString() === userId.toString();
     const isQuotationCreator = rfq.quotationCreatorId && rfq.quotationCreatorId.toString() === userId.toString();
-
-    if (hasViewOnly) {
-      return sendErrorResponse(res, 403, 'Insufficient permissions. View-only access cannot edit RFQs.');
-    }
 
     if (!isRequester && !isQuotationCreator && !canCreateQuotation) {
       return sendErrorResponse(res, 403, 'Not authorized to edit this RFQ');

@@ -1,8 +1,8 @@
 const mongoose = require('mongoose');
 
-// Notes Image Schema - standalone images that can be referenced by offers
+// Notes Image Schema - standalone images and documents that can be referenced by offers
 const notesImageSchema = new mongoose.Schema({
-  // Image file information
+  // File information (supports both images and documents)
   imageFile: {
     fileId: {
       type: mongoose.Schema.Types.ObjectId,
@@ -18,7 +18,16 @@ const notesImageSchema = new mongoose.Schema({
     },
     fileType: {
       type: String,
-      enum: ['JPG', 'JPEG', 'PNG', 'GIF', 'WEBP'],
+      enum: ['JPG', 'JPEG', 'PNG', 'GIF', 'WEBP', 'PDF', 'DOC', 'DOCX', 'XLS', 'XLSX', 'TXT', 'CSV'],
+      required: true
+    },
+    fileCategory: {
+      type: String,
+      enum: ['image', 'document'],
+      required: true
+    },
+    mimeType: {
+      type: String,
       required: true
     },
     fileSize: {
@@ -31,7 +40,7 @@ const notesImageSchema = new mongoose.Schema({
     },
     isOptimized: {
       type: Boolean,
-      default: true
+      default: false // Only true for images that were optimized
     },
     uploadDate: {
       type: Date,
