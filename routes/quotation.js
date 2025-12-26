@@ -859,7 +859,7 @@ router.get('/:quotationNumber', authenticateToken, authorize(['quotation_view'])
 // Update quotation header
 router.put('/:quotationNumber', authenticateToken, authorize(['quotation_edit']), async (req, res) => {
   try {
-    // Additional check: prevent viewer-only users from editing
+    // Additional check: prevent viewer-only users from editing (unless they are the creator)
     const user = await User.findById(req.user.userId).populate('permissions');
     const userPermissions = user.permissions.map(p => p.name);
     const hasViewerPermission = userPermissions.includes('all_quotation_viewer');
@@ -868,15 +868,23 @@ router.put('/:quotationNumber', authenticateToken, authorize(['quotation_edit'])
                                userPermissions.includes('admin') || 
                                userPermissions.includes('manager');
     
-    // Reject if user has viewer permission but no edit/admin permissions
-    if (hasViewerPermission && !hasEditPermission && !hasAdminPermission) {
+    const { quotationNumber } = req.params;
+    const result = await getQuotationOffers(quotationNumber);
+    
+    // Check if user is the creator
+    const creatorId = result.header?.creatorId?._id || result.header?.creatorId || result.header?.createdBy?._id || result.header?.createdBy;
+    const userId = req.user.userId;
+    const isCreator = creatorId && userId && (
+      creatorId.toString() === userId.toString() ||
+      (typeof creatorId === 'object' && creatorId.toString() === userId.toString())
+    );
+    
+    // Reject if user has viewer permission but no edit/admin permissions AND is not the creator
+    if (hasViewerPermission && !hasEditPermission && !hasAdminPermission && !isCreator) {
       return sendErrorResponse(res, 403, 'Access denied. You only have view permission for quotations.');
     }
     
-    const { quotationNumber } = req.params;
     const updateData = req.body;
-
-    const result = await getQuotationOffers(quotationNumber);
 
     const updatedHeader = await updateQuotationHeader(result.header._id, updateData);
 
@@ -890,7 +898,7 @@ router.put('/:quotationNumber', authenticateToken, authorize(['quotation_edit'])
 // Delete quotation (header + all offers + all items)
 router.delete('/:quotationNumber', authenticateToken, authorize(['quotation_delete']), async (req, res) => {
   try {
-    // Additional check: prevent viewer-only users from deleting
+    // Additional check: prevent viewer-only users from deleting (unless they are the creator)
     const user = await User.findById(req.user.userId).populate('permissions');
     const userPermissions = user.permissions.map(p => p.name);
     const hasViewerPermission = userPermissions.includes('all_quotation_viewer');
@@ -899,13 +907,21 @@ router.delete('/:quotationNumber', authenticateToken, authorize(['quotation_dele
                                userPermissions.includes('admin') || 
                                userPermissions.includes('manager');
     
-    // Reject if user has viewer permission but no delete/admin permissions
-    if (hasViewerPermission && !hasDeletePermission && !hasAdminPermission) {
-      return sendErrorResponse(res, 403, 'Access denied. You only have view permission for quotations.');
-    }
-    
     const { quotationNumber } = req.params;
     const result = await getQuotationOffers(quotationNumber);
+    
+    // Check if user is the creator
+    const creatorId = result.header?.creatorId?._id || result.header?.creatorId || result.header?.createdBy?._id || result.header?.createdBy;
+    const userId = req.user.userId;
+    const isCreator = creatorId && userId && (
+      creatorId.toString() === userId.toString() ||
+      (typeof creatorId === 'object' && creatorId.toString() === userId.toString())
+    );
+    
+    // Reject if user has viewer permission but no delete/admin permissions AND is not the creator
+    if (hasViewerPermission && !hasDeletePermission && !hasAdminPermission && !isCreator) {
+      return sendErrorResponse(res, 403, 'Access denied. You only have view permission for quotations.');
+    }
 
     // Collect all offer IDs for cleanup
     const offerIds = [];
@@ -1127,7 +1143,7 @@ router.post('/:quotationId/offers', authenticateToken, authorize(['quotation_edi
 // Update specific offer
 router.put('/:quotationId/offers/:offerId', authenticateToken, authorize(['quotation_edit']), async (req, res) => {
   try {
-    // Additional check: prevent viewer-only users from editing
+    // Additional check: prevent viewer-only users from editing (unless they are the creator)
     const user = await User.findById(req.user.userId).populate('permissions');
     const userPermissions = user.permissions.map(p => p.name);
     const hasViewerPermission = userPermissions.includes('all_quotation_viewer');
@@ -1135,11 +1151,6 @@ router.put('/:quotationId/offers/:offerId', authenticateToken, authorize(['quota
     const hasAdminPermission = userPermissions.includes('quotation_admin') || 
                                userPermissions.includes('admin') || 
                                userPermissions.includes('manager');
-    
-    // Reject if user has viewer permission but no edit/admin permissions
-    if (hasViewerPermission && !hasEditPermission && !hasAdminPermission) {
-      return sendErrorResponse(res, 403, 'Access denied. You only have view permission for quotations.');
-    }
     
     const { quotationId, offerId } = req.params;
     const updateData = req.body;
@@ -1152,6 +1163,23 @@ router.put('/:quotationId/offers/:offerId', authenticateToken, authorize(['quota
     } catch (error) {
       // If that fails, try to find by quotationNumber
       header = await QuotationHeader.findOne({ quotationNumber: quotationId });
+    }
+    
+    if (!header) {
+      return sendErrorResponse(res, 404, 'Quotation not found');
+    }
+    
+    // Check if user is the creator
+    const creatorId = header?.creatorId?._id || header?.creatorId || header?.createdBy?._id || header?.createdBy;
+    const userId = req.user.userId;
+    const isCreator = creatorId && userId && (
+      creatorId.toString() === userId.toString() ||
+      (typeof creatorId === 'object' && creatorId.toString() === userId.toString())
+    );
+    
+    // Reject if user has viewer permission but no edit/admin permissions AND is not the creator
+    if (hasViewerPermission && !hasEditPermission && !hasAdminPermission && !isCreator) {
+      return sendErrorResponse(res, 403, 'Access denied. You only have view permission for quotations.');
     }
     
     if (!header) {
