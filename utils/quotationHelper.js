@@ -717,26 +717,59 @@ const getQuotationOfferById = async (offerId) => {
 };
 
 // Get all offers for a quotation with revision hierarchy
-const getQuotationOffers = async (quotationNumber) => {
-  const header = await QuotationHeader.findOne({ quotationNumber })
-    .populate('requesterId', 'fullName email phoneNumbers')
-    .populate('approverId', 'fullName email phoneNumbers')
-    .populate('creatorId', 'fullName email phoneNumbers')
-    .populate({
-      path: 'downloads.userId',
-      select: 'fullName email'
-    })
-    .populate({
-      path: 'rfqId',
-      populate: [
-        { path: 'requesterId', select: 'fullName email' },
-        { path: 'approverId', select: 'fullName email' },
-        { path: 'quotationCreatorId', select: 'fullName email' },
-        { path: 'timeline.user', select: 'fullName email' },
-        { path: 'documents', populate: { path: 'uploadedBy', select: 'fullName email' } },
-        { path: 'items', populate: [{ path: 'drawingSpecification' }, { path: 'templateSourceId' }] }
-      ]
-    });
+const getQuotationOffers = async (quotationIdentifier) => {
+  // Handle both ObjectId and quotationNumber
+  let header;
+  
+  // Check if it's a valid ObjectId (24 hex characters)
+  const isValidObjectId = /^[0-9a-fA-F]{24}$/.test(quotationIdentifier);
+  
+  if (isValidObjectId) {
+    // Try to find by _id first
+    header = await QuotationHeader.findById(quotationIdentifier)
+      .populate('requesterId', 'fullName email phoneNumbers')
+      .populate('approverId', 'fullName email phoneNumbers')
+      .populate('creatorId', 'fullName email phoneNumbers')
+      .populate({
+        path: 'downloads.userId',
+        select: 'fullName email'
+      })
+      .populate({
+        path: 'rfqId',
+        populate: [
+          { path: 'requesterId', select: 'fullName email' },
+          { path: 'approverId', select: 'fullName email' },
+          { path: 'quotationCreatorId', select: 'fullName email' },
+          { path: 'timeline.user', select: 'fullName email' },
+          { path: 'documents', populate: { path: 'uploadedBy', select: 'fullName email' } },
+          { path: 'items', populate: [{ path: 'drawingSpecification' }, { path: 'templateSourceId' }] }
+        ]
+      });
+  }
+  
+  // If not found by _id or not a valid ObjectId, try quotationNumber
+  if (!header) {
+    header = await QuotationHeader.findOne({ quotationNumber: quotationIdentifier })
+      .populate('requesterId', 'fullName email phoneNumbers')
+      .populate('approverId', 'fullName email phoneNumbers')
+      .populate('creatorId', 'fullName email phoneNumbers')
+      .populate({
+        path: 'downloads.userId',
+        select: 'fullName email'
+      })
+      .populate({
+        path: 'rfqId',
+        populate: [
+          { path: 'requesterId', select: 'fullName email' },
+          { path: 'approverId', select: 'fullName email' },
+          { path: 'quotationCreatorId', select: 'fullName email' },
+          { path: 'timeline.user', select: 'fullName email' },
+          { path: 'documents', populate: { path: 'uploadedBy', select: 'fullName email' } },
+          { path: 'items', populate: [{ path: 'drawingSpecification' }, { path: 'templateSourceId' }] }
+        ]
+      });
+  }
+  
   if (!header) {
     throw new Error('Quotation header not found');
   }
