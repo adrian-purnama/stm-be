@@ -51,3 +51,4 @@ sessionSchema.methods.isValid = function() {
 
 module.exports = mongoose.model('Session', sessionSchema);
 
+

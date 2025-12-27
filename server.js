@@ -35,7 +35,8 @@ const corsOptions = {
       'https://uat-stm-portal.stm-asb.co.id',
       'https://stm-portal.stm-asb.co.id',
       'http://stm-portal.stm-asb.co.id',
-      'https://be-uat-stm-portal.stm-asb.co.id' // Backend domain (if needed)
+      'http://72.61.208.60:3501',
+      'https://be-uat-stm-portal.stm-asb.co.id', // Backend domain (if needed)
     ].filter(Boolean); // Remove undefined/null values
     
     // In development/preprod, allow all origins
