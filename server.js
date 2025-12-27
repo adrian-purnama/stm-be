@@ -34,6 +34,7 @@ const corsOptions = {
       'http://localhost:5173',
       'https://uat-stm-portal.stm-asb.co.id',
       'https://stm-portal.stm-asb.co.id',
+      'http://stm-portal.stm-asb.co.id',
       'https://be-uat-stm-portal.stm-asb.co.id' // Backend domain (if needed)
     ].filter(Boolean); // Remove undefined/null values
     
@@ -204,6 +205,7 @@ app.use('/api/notifications', require('./routes/notifications'));
 app.use('/api/rfq', require('./routes/rfqDocuments'));
 app.use('/api/rfq', require('./routes/rfq'));
 app.use('/api/companies', require('./routes/companies'));
+app.use('/api/sessions', require('./routes/sessions'));
 
 app.get('/api/health', (req, res) => {
   res.json({
