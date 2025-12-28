@@ -754,8 +754,11 @@ router.post('/', authenticateToken, authorize(['quotation_create']), async (req,
 // Get specific quotation by ID
 router.get('/by-id/:quotationId', authenticateToken, authorize(['quotation_view']), async (req, res) => {
   try {
-    const { quotationId } = req.params;
+    let { quotationId } = req.params;
+    // Decode URL-encoded quotation ID (handles quotation numbers with slashes)
+    quotationId = decodeURIComponent(quotationId);
     
+    console.log('[DEBUG] GET /by-id/:quotationId - Request received with quotationId:', quotationId);
     
     // Get quotation header by ID or quotationNumber
     let header;
@@ -768,6 +771,7 @@ router.get('/by-id/:quotationId', authenticateToken, authorize(['quotation_view'
     }
     
     if (!header) {
+      console.log('[DEBUG] Quotation header not found for ID:', quotationId);
       return sendErrorResponse(res, 404, 'Quotation not found');
     }
     
@@ -780,7 +784,7 @@ router.get('/by-id/:quotationId', authenticateToken, authorize(['quotation_view'
       offers: result.offers
     });
   } catch (error) {
-    console.error('Error fetching quotation by ID:', error);
+    console.error('[DEBUG] Error fetching quotation by ID:', error);
     return sendErrorResponse(res, 500, 'Failed to fetch quotation', error.message);
   }
 });
@@ -842,16 +846,133 @@ router.get('/:quotationNumber/header', authenticateToken, authorize(['quotation_
   }
 });
 
+// Get offers pending approval - MUST be before /:quotationNumber route to avoid route conflict
+router.get('/pending-approval', authenticateToken, authorize(['engineer_download_approver', 'quotation_download_approver']), async (req, res) => {
+  try {
+    console.log('[DEBUG] GET /pending-approval - Request received');
+    const user = await User.findById(req.user.userId).populate('permissions');
+    
+    // Use permission helper to check permissions (handles super_admin correctly)
+    const { hasPermission, hasAnyPermission, isSuperAdmin, getAllUserPermissions } = require('../utils/permissionHelper');
+    
+    // Check if user is super_admin (grants all permissions)
+    const isSuperAdminUser = isSuperAdmin(user);
+    
+    // Get all user permissions for debugging
+    const allUserPermissions = getAllUserPermissions(user);
+    
+    // Check specific permissions
+    const hasEngineerPermission = hasPermission(user, 'engineer_download_approver') || isSuperAdminUser;
+    const hasManagementPermission = hasPermission(user, 'quotation_download_approver') || isSuperAdminUser;
+    
+    console.log('[DEBUG] User permissions:', { 
+      isSuperAdminUser,
+      hasEngineerPermission, 
+      hasManagementPermission, 
+      allUserPermissions,
+      rawPermissions: user.permissions.map(p => ({ name: p.name, type: p.type, includes: p.includes }))
+    });
+    
+    // Build query based on user's permissions
+    let approvalQuery = {};
+    if (hasEngineerPermission && hasManagementPermission) {
+      // User has both permissions (or is super_admin) - show all pending approvals
+      approvalQuery = {
+        $or: [
+          { 'downloadApproval.engineerApproval.status': 'pending' },
+          { 'downloadApproval.managementApproval.status': 'pending' }
+        ]
+      };
+    } else if (hasEngineerPermission) {
+      // Only engineer permission - show only engineer pending
+      approvalQuery = { 'downloadApproval.engineerApproval.status': 'pending' };
+    } else if (hasManagementPermission) {
+      // Only management permission - show only management pending
+      approvalQuery = { 'downloadApproval.managementApproval.status': 'pending' };
+    } else {
+      console.log('[DEBUG] Access denied - no required permissions');
+      return sendErrorResponse(res, 403, 'Access denied', 'You do not have permission to view pending approvals');
+    }
+    
+    console.log('[DEBUG] Approval query:', JSON.stringify(approvalQuery));
+    
+    const offers = await QuotationOffer.find(approvalQuery)
+      .populate('quotationHeaderId')
+      .populate('downloadApproval.engineerApproval.approvedBy', 'fullName email')
+      .populate('downloadApproval.managementApproval.approvedBy', 'fullName email')
+      .sort({ createdAt: -1 });
+    
+    console.log('[DEBUG] Found offers:', offers.length);
+    
+    // Get quotation header IDs from offers
+    const headerIds = [...new Set(offers.map(o => {
+      const headerId = o.quotationHeaderId?._id || o.quotationHeaderId;
+      return headerId ? headerId.toString() : null;
+    }).filter(Boolean))];
+    
+    console.log('[DEBUG] Header IDs:', headerIds.length);
+    
+    // Get quotation headers by _id
+    const headers = await QuotationHeader.find({ _id: { $in: headerIds } })
+      .populate('requesterId', 'fullName email')
+      .populate('creatorId', 'fullName email')
+      .populate('approverId', 'fullName email');
+    
+    console.log('[DEBUG] Found headers:', headers.length);
+    
+    const headerMap = new Map();
+    headers.forEach(h => headerMap.set(h._id.toString(), h));
+    
+    // Enrich offers with header data
+    const enrichedOffers = offers.map(offer => {
+      const headerId = offer.quotationHeaderId?._id || offer.quotationHeaderId;
+      const headerIdStr = headerId ? headerId.toString() : null;
+      const header = headerIdStr ? headerMap.get(headerIdStr) : null;
+      return {
+        ...offer.toObject(),
+        header: header || offer.quotationHeaderId || null
+      };
+    }).filter(offer => offer.header !== null); // Filter out offers without headers
+    
+    console.log('[DEBUG] Enriched offers:', enrichedOffers.length);
+    
+    return sendSuccessResponse(res, 200, 'Pending approvals retrieved successfully', {
+      offers: enrichedOffers,
+      count: enrichedOffers.length
+    });
+  } catch (error) {
+    console.error('[DEBUG] Error fetching pending approvals:', error);
+    return sendErrorResponse(res, 500, 'Failed to fetch pending approvals', error.message);
+  }
+});
+
 // Get specific quotation by quotation number
 router.get('/:quotationNumber', authenticateToken, authorize(['quotation_view']), async (req, res) => {
   try {
-    const { quotationNumber } = req.params;
+    let { quotationNumber } = req.params;
+    
+    console.log('[DEBUG] GET /:quotationNumber - Request received with quotationNumber:', quotationNumber);
+    
+    // Prevent matching "pending-approval" as a quotation number
+    if (quotationNumber === 'pending-approval') {
+      console.error('[DEBUG] Route conflict detected - pending-approval matched by :quotationNumber route');
+      return sendErrorResponse(res, 404, 'Route not found', 'The pending-approval route should be handled separately');
+    }
+    
+    // Decode URL-encoded parameter
+    if (quotationNumber) {
+      quotationNumber = decodeURIComponent(quotationNumber);
+      console.log('[DEBUG] Decoded quotationNumber:', quotationNumber);
+    }
+    
+    console.log('[DEBUG] Calling getQuotationOffers with:', quotationNumber);
     const result = await getQuotationOffers(quotationNumber);
-
+    console.log('[DEBUG] getQuotationOffers returned result:', result ? 'success' : 'null');
 
     return sendSuccessResponse(res, 200, 'Quotation retrieved successfully', result);
   } catch (error) {
-    console.error('Error getting quotation:', error);
+    console.error('[DEBUG] Error getting quotation:', error);
+    console.error('[DEBUG] Error stack:', error.stack);
     return sendErrorResponse(res, 400, 'Failed to get quotation', error.message);
   }
 });
@@ -1186,6 +1307,19 @@ router.put('/:quotationId/offers/:offerId', authenticateToken, authorize(['quota
       return sendErrorResponse(res, 404, 'Quotation not found');
     }
 
+    // Check if offer is approved - if so, prevent editing
+    const offer = await QuotationOffer.findById(offerId);
+    if (!offer) {
+      return sendErrorResponse(res, 404, 'Offer not found');
+    }
+
+    const isDownloadApproved = offer.downloadApproval?.engineerApproval?.status === 'approved' &&
+                                offer.downloadApproval?.managementApproval?.status === 'approved';
+    
+    if (isDownloadApproved) {
+      return sendErrorResponse(res, 403, 'Cannot edit an approved offer. Please create a revision instead.');
+    }
+
     const updatedOffer = await updateQuotationOffer(offerId, updateData);
 
     return sendSuccessResponse(res, 200, 'Offer updated successfully', updatedOffer);
@@ -1214,6 +1348,19 @@ router.delete('/:quotationId/offers/:offerId', authenticateToken, authorize(['qu
       return sendErrorResponse(res, 404, 'Quotation not found');
     }
 
+    // Check if offer is approved - if so, prevent deletion
+    const offer = await QuotationOffer.findById(offerId);
+    if (!offer) {
+      return sendErrorResponse(res, 404, 'Offer not found');
+    }
+
+    const isDownloadApproved = offer.downloadApproval?.engineerApproval?.status === 'approved' &&
+                                offer.downloadApproval?.managementApproval?.status === 'approved';
+    
+    if (isDownloadApproved) {
+      return sendErrorResponse(res, 403, 'Cannot delete an approved offer. Please create a revision instead.');
+    }
+
     // Clean up orphaned notes images before deleting the offer
     const { cleanupOrphanedImages } = require('./notesImages');
     const cleanupResult = await cleanupOrphanedImages([offerId]);
@@ -1230,6 +1377,138 @@ router.delete('/:quotationId/offers/:offerId', authenticateToken, authorize(['qu
   } catch (error) {
     console.error('Error deleting offer:', error);
     return sendErrorResponse(res, 400, 'Failed to delete offer', error.message);
+  }
+});
+
+// ============================================================================
+// DOWNLOAD APPROVAL ROUTES
+// ============================================================================
+
+// Approve/reject offer as engineer
+router.post('/:quotationNumber/offers/:offerId/approve/engineer', authenticateToken, authorize(['engineer_download_approver']), async (req, res) => {
+  try {
+    let { quotationNumber, offerId } = req.params;
+    // Decode URL-encoded quotation number (handles quotation numbers with slashes)
+    quotationNumber = decodeURIComponent(quotationNumber);
+    
+    const { action, note } = req.body; // action: 'approve' or 'reject', note: required for reject
+    
+    if (!action || !['approve', 'reject'].includes(action)) {
+      return sendErrorResponse(res, 400, 'Invalid action', 'Action must be either "approve" or "reject"');
+    }
+    
+    if (action === 'reject' && (!note || !note.trim())) {
+      return sendErrorResponse(res, 400, 'Rejection note required', 'A note is required when rejecting an offer');
+    }
+    
+    const offer = await QuotationOffer.findById(offerId)
+      .populate('quotationHeaderId');
+    
+    if (!offer) {
+      return sendErrorResponse(res, 404, 'Offer not found');
+    }
+    
+    // Get header ID from offer
+    const offerHeaderId = offer.quotationHeaderId?._id || offer.quotationHeaderId;
+    
+    // Verify offer belongs to the quotation - try finding by quotationNumber first, then by _id
+    let header = await QuotationHeader.findOne({ quotationNumber });
+    if (!header) {
+      // If quotationNumber lookup fails, try to find by _id if quotationNumber is actually an _id
+      header = await QuotationHeader.findById(quotationNumber);
+    }
+    
+    if (!header || !offerHeaderId || offerHeaderId.toString() !== header._id.toString()) {
+      return sendErrorResponse(res, 404, 'Offer not found in this quotation');
+    }
+    
+    // Update approval status
+    const updateData = {
+      'downloadApproval.engineerApproval.status': action === 'approve' ? 'approved' : 'rejected',
+      'downloadApproval.engineerApproval.approvedBy': req.user.userId,
+      'downloadApproval.engineerApproval.approvedAt': new Date()
+    };
+    
+    if (action === 'reject') {
+      updateData['downloadApproval.engineerApproval.rejectionNote'] = note.trim();
+    } else {
+      updateData['downloadApproval.engineerApproval.rejectionNote'] = '';
+    }
+    
+    await QuotationOffer.findByIdAndUpdate(offerId, { $set: updateData });
+    
+    const updatedOffer = await QuotationOffer.findById(offerId)
+      .populate('downloadApproval.engineerApproval.approvedBy', 'fullName email')
+      .populate('quotationHeaderId');
+    
+    return sendSuccessResponse(res, 200, `Offer ${action === 'approve' ? 'approved' : 'rejected'} successfully`, updatedOffer);
+  } catch (error) {
+    console.error('Error updating engineer approval:', error);
+    return sendErrorResponse(res, 500, 'Failed to update approval', error.message);
+  }
+});
+
+// Approve/reject offer as management
+router.post('/:quotationNumber/offers/:offerId/approve/management', authenticateToken, authorize(['quotation_download_approver']), async (req, res) => {
+  try {
+    let { quotationNumber, offerId } = req.params;
+    // Decode URL-encoded quotation number (handles quotation numbers with slashes)
+    quotationNumber = decodeURIComponent(quotationNumber);
+    
+    const { action, note } = req.body; // action: 'approve' or 'reject', note: required for reject
+    
+    if (!action || !['approve', 'reject'].includes(action)) {
+      return sendErrorResponse(res, 400, 'Invalid action', 'Action must be either "approve" or "reject"');
+    }
+    
+    if (action === 'reject' && (!note || !note.trim())) {
+      return sendErrorResponse(res, 400, 'Rejection note required', 'A note is required when rejecting an offer');
+    }
+    
+    const offer = await QuotationOffer.findById(offerId)
+      .populate('quotationHeaderId');
+    
+    if (!offer) {
+      return sendErrorResponse(res, 404, 'Offer not found');
+    }
+    
+    // Get header ID from offer
+    const offerHeaderId = offer.quotationHeaderId?._id || offer.quotationHeaderId;
+    
+    // Verify offer belongs to the quotation - try finding by quotationNumber first, then by _id
+    let header = await QuotationHeader.findOne({ quotationNumber });
+    if (!header) {
+      // If quotationNumber lookup fails, try to find by _id if quotationNumber is actually an _id
+      header = await QuotationHeader.findById(quotationNumber);
+    }
+    
+    if (!header || !offerHeaderId || offerHeaderId.toString() !== header._id.toString()) {
+      return sendErrorResponse(res, 404, 'Offer not found in this quotation');
+    }
+    
+    // Update approval status
+    const updateData = {
+      'downloadApproval.managementApproval.status': action === 'approve' ? 'approved' : 'rejected',
+      'downloadApproval.managementApproval.approvedBy': req.user.userId,
+      'downloadApproval.managementApproval.approvedAt': new Date()
+    };
+    
+    if (action === 'reject') {
+      updateData['downloadApproval.managementApproval.rejectionNote'] = note.trim();
+    } else {
+      updateData['downloadApproval.managementApproval.rejectionNote'] = '';
+    }
+    
+    await QuotationOffer.findByIdAndUpdate(offerId, { $set: updateData });
+    
+    const updatedOffer = await QuotationOffer.findById(offerId)
+      .populate('downloadApproval.managementApproval.approvedBy', 'fullName email')
+      .populate('quotationHeaderId');
+    
+    return sendSuccessResponse(res, 200, `Offer ${action === 'approve' ? 'approved' : 'rejected'} successfully`, updatedOffer);
+  } catch (error) {
+    console.error('Error updating management approval:', error);
+    return sendErrorResponse(res, 500, 'Failed to update approval', error.message);
   }
 });
 
@@ -1570,6 +1849,37 @@ router.get('/:id/download', authenticateToken, authorize(['quotation_view']), as
     
     // Get all offers for this quotation
     const result = await getQuotationOffers(header.quotationNumber);
+    
+    // If specific offerId is provided, check if it's approved
+    if (offerId) {
+      const targetOffer = await QuotationOffer.findById(offerId);
+      if (!targetOffer) {
+        return sendErrorResponse(res, 404, 'Offer not found');
+      }
+      
+      const isDownloadApproved = targetOffer.downloadApproval?.engineerApproval?.status === 'approved' &&
+                                  targetOffer.downloadApproval?.managementApproval?.status === 'approved';
+      
+      if (!isDownloadApproved) {
+        return sendErrorResponse(res, 403, 'This offer has not been approved for download. It requires approval from both engineering and management.');
+      }
+    } else {
+      // If no specific offerId, check if any offer in the quotation is approved
+      // For now, we'll allow download if at least one offer is approved
+      // Or we could require all offers to be approved - let's require at least one approved offer
+      const hasApprovedOffer = result.offers.some(offerGroup => {
+        const offers = offerGroup.original ? [offerGroup.original, ...(offerGroup.revisions || [])] : [offerGroup];
+        return offers.some(offer => {
+          const offerObj = offer.original || offer;
+          return offerObj.downloadApproval?.engineerApproval?.status === 'approved' &&
+                 offerObj.downloadApproval?.managementApproval?.status === 'approved';
+        });
+      });
+      
+      if (!hasApprovedOffer) {
+        return sendErrorResponse(res, 403, 'No approved offers found in this quotation. At least one offer must be approved by both engineering and management before download.');
+      }
+    }
     
     // Check if user is a requester
     const { hasPermission } = require('../utils/permissionHelper');

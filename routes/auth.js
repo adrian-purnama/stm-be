@@ -89,6 +89,8 @@ const seedDatabase = async (adminUserId) => {
       { name: 'quotation_requester', displayName: 'Quotation Requester', description: 'Create RFQ Requests', category: 'quotation' },
       { name: 'engineer_review', displayName: 'Engineer Review', description: 'Review RFQs in engineering stage', category: 'quotation' },
       { name: 'quotation_admin', displayName: 'Quotation Admin', description: 'Full quotation administration access', category: 'quotation' },
+      { name: 'engineer_download_approver', displayName: 'Engineer Download Approver', description: 'Approve quotation offers for download (Engineering)', category: 'quotation' },
+      { name: 'quotation_download_approver', displayName: 'Quotation Download Approver', description: 'Approve quotation offers for download (Management)', category: 'quotation' },
 
       // Notes Management
       { name: 'notes_view', displayName: 'View Notes', description: 'View notes and images', category: 'notes' },

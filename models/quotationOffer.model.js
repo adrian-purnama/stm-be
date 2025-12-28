@@ -12,7 +12,6 @@ const quotationOfferSchema = new mongoose.Schema({
   // Offer identity
   offerNumber: {
     type: String,
-    unique: true,
     required: true
   },
   
@@ -87,7 +86,53 @@ const quotationOfferSchema = new mongoose.Schema({
   notesImages: [{
     type: mongoose.Schema.Types.ObjectId,
     ref: 'NotesImage'
-  }]
+  }],
+
+  // Download approval tracking
+  downloadApproval: {
+    engineerApproval: {
+      status: {
+        type: String,
+        enum: ['pending', 'approved', 'rejected'],
+        default: 'pending'
+      },
+      approvedBy: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+        default: null
+      },
+      approvedAt: {
+        type: Date,
+        default: null
+      },
+      rejectionNote: {
+        type: String,
+        trim: true,
+        default: ''
+      }
+    },
+    managementApproval: {
+      status: {
+        type: String,
+        enum: ['pending', 'approved', 'rejected'],
+        default: 'pending'
+      },
+      approvedBy: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+        default: null
+      },
+      approvedAt: {
+        type: Date,
+        default: null
+      },
+      rejectionNote: {
+        type: String,
+        trim: true,
+        default: ''
+      }
+    }
+  }
 }, {
   timestamps: true
 });
@@ -121,6 +166,12 @@ quotationOfferSchema.virtual('acceptanceStatus').get(function() {
   if (this.isFullyAccepted) return 'fully_accepted';
   if (this.isPartiallyAccepted) return 'partially_accepted';
   return 'not_accepted';
+});
+
+// Virtual to check if offer is fully approved for download
+quotationOfferSchema.virtual('isDownloadApproved').get(function() {
+  return this.downloadApproval?.engineerApproval?.status === 'approved' &&
+         this.downloadApproval?.managementApproval?.status === 'approved';
 });
 
 // Instance methods for notes images

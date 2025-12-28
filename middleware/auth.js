@@ -81,14 +81,25 @@ const authorize = (...requiredPermissions) => {
     }
 
     const userPermissions = [];
+    let isSuperAdmin = false;
     if (req.user.permissions && Array.isArray(req.user.permissions)) {
       req.user.permissions.forEach(permission => {
+        if (permission.name === 'super_admin') {
+          isSuperAdmin = true;
+        }
         if (permission.type === 'individual') {
           userPermissions.push(permission.name);
         } else if (permission.type === 'multi' && permission.includes) {
           userPermissions.push(...permission.includes);
         }
       });
+    }
+
+    // Super admin has access to everything
+    if (isSuperAdmin) {
+      req.userPermissions = userPermissions;
+      next();
+      return;
     }
 
     const hasAllPermissions = permissions.every(permission => 

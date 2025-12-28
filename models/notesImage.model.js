@@ -18,7 +18,7 @@ const notesImageSchema = new mongoose.Schema({
     },
     fileType: {
       type: String,
-      enum: ['JPG', 'JPEG', 'PNG', 'GIF', 'WEBP'],
+      enum: ['JPG', 'JPEG', 'PNG', 'GIF', 'WEBP', 'PDF', 'DOC', 'DOCX', 'XLS', 'XLSX', 'TXT', 'CSV'],
       required: true
     },
     fileSize: {

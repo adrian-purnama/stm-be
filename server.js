@@ -108,6 +108,9 @@ const connectDB = async () => {
     
     // Fix chassis type indexes on startup
     await fixChassisTypeIndexes();
+    
+    // Auto-approve all existing offers (migration)
+   // await autoApproveExistingOffers();
   } catch (error) {
     console.error('❌ MongoDB connection error:', error);
     process.exit(1);
@@ -182,6 +185,61 @@ const fixChassisTypeIndexes = async () => {
     }
   } catch (error) {
     console.error('⚠️  Error fixing chassis type indexes:', error.message);
+    // Don't exit - this is not critical for server startup
+  }
+};
+
+// Auto-approve all existing offers that don't have approval status set
+const autoApproveExistingOffers = async () => {
+  try {
+    const QuotationOffer = require('./models/quotationOffer.model');
+    
+    // Find all offers where both engineer and management approvals are still pending
+    const pendingOffers = await QuotationOffer.find({
+      $or: [
+        { 'downloadApproval.engineerApproval.status': 'pending' },
+        { 'downloadApproval.managementApproval.status': 'pending' },
+        { 'downloadApproval': { $exists: false } }
+      ]
+    });
+    
+    if (pendingOffers.length === 0) {
+      console.log('✅ All offers are already approved or have approval status set');
+      return;
+    }
+    
+    console.log(`🔧 Found ${pendingOffers.length} offers with pending approvals, auto-approving...`);
+    
+    let approvedCount = 0;
+    for (const offer of pendingOffers) {
+      const updateData = {};
+      
+      // Set engineer approval to approved if it's pending
+      if (!offer.downloadApproval?.engineerApproval || 
+          offer.downloadApproval.engineerApproval.status === 'pending') {
+        updateData['downloadApproval.engineerApproval.status'] = 'approved';
+        updateData['downloadApproval.engineerApproval.approvedAt'] = offer.createdAt || new Date();
+        // Keep approvedBy as null for auto-approved offers
+      }
+      
+      // Set management approval to approved if it's pending
+      if (!offer.downloadApproval?.managementApproval || 
+          offer.downloadApproval.managementApproval.status === 'pending') {
+        updateData['downloadApproval.managementApproval.status'] = 'approved';
+        updateData['downloadApproval.managementApproval.approvedAt'] = offer.createdAt || new Date();
+        // Keep approvedBy as null for auto-approved offers
+      }
+      
+      // Only update if there are changes
+      if (Object.keys(updateData).length > 0) {
+        await QuotationOffer.findByIdAndUpdate(offer._id, { $set: updateData });
+        approvedCount++;
+      }
+    }
+    
+    console.log(`✅ Auto-approved ${approvedCount} existing offers`);
+  } catch (error) {
+    console.error('⚠️  Error auto-approving existing offers:', error.message);
     // Don't exit - this is not critical for server startup
   }
 };

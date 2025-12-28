@@ -721,57 +721,68 @@ const getQuotationOffers = async (quotationIdentifier) => {
   // Handle both ObjectId and quotationNumber
   let header;
   
+  if (!quotationIdentifier) {
+    throw new Error('Quotation identifier is required');
+  }
+  
+  // Helper function to populate header
+  const populateHeader = (query) => {
+    return query
+      .populate('requesterId', 'fullName email phoneNumbers')
+      .populate('approverId', 'fullName email phoneNumbers')
+      .populate('creatorId', 'fullName email phoneNumbers')
+      .populate({
+        path: 'downloads.userId',
+        select: 'fullName email'
+      })
+      .populate({
+        path: 'rfqId',
+        populate: [
+          { path: 'requesterId', select: 'fullName email' },
+          { path: 'approverId', select: 'fullName email' },
+          { path: 'quotationCreatorId', select: 'fullName email' },
+          { path: 'timeline.user', select: 'fullName email' },
+          { path: 'documents', populate: { path: 'uploadedBy', select: 'fullName email' } },
+          { path: 'items', populate: [{ path: 'drawingSpecification' }, { path: 'templateSourceId' }] }
+        ]
+      });
+  };
+  
   // Check if it's a valid ObjectId (24 hex characters)
   const isValidObjectId = /^[0-9a-fA-F]{24}$/.test(quotationIdentifier);
   
   if (isValidObjectId) {
     // Try to find by _id first
-    header = await QuotationHeader.findById(quotationIdentifier)
-      .populate('requesterId', 'fullName email phoneNumbers')
-      .populate('approverId', 'fullName email phoneNumbers')
-      .populate('creatorId', 'fullName email phoneNumbers')
-      .populate({
-        path: 'downloads.userId',
-        select: 'fullName email'
-      })
-      .populate({
-        path: 'rfqId',
-        populate: [
-          { path: 'requesterId', select: 'fullName email' },
-          { path: 'approverId', select: 'fullName email' },
-          { path: 'quotationCreatorId', select: 'fullName email' },
-          { path: 'timeline.user', select: 'fullName email' },
-          { path: 'documents', populate: { path: 'uploadedBy', select: 'fullName email' } },
-          { path: 'items', populate: [{ path: 'drawingSpecification' }, { path: 'templateSourceId' }] }
-        ]
-      });
+    try {
+      header = await populateHeader(QuotationHeader.findById(quotationIdentifier));
+    } catch (error) {
+      console.error('Error finding header by _id:', error);
+    }
   }
   
   // If not found by _id or not a valid ObjectId, try quotationNumber
   if (!header) {
-    header = await QuotationHeader.findOne({ quotationNumber: quotationIdentifier })
-      .populate('requesterId', 'fullName email phoneNumbers')
-      .populate('approverId', 'fullName email phoneNumbers')
-      .populate('creatorId', 'fullName email phoneNumbers')
-      .populate({
-        path: 'downloads.userId',
-        select: 'fullName email'
-      })
-      .populate({
-        path: 'rfqId',
-        populate: [
-          { path: 'requesterId', select: 'fullName email' },
-          { path: 'approverId', select: 'fullName email' },
-          { path: 'quotationCreatorId', select: 'fullName email' },
-          { path: 'timeline.user', select: 'fullName email' },
-          { path: 'documents', populate: { path: 'uploadedBy', select: 'fullName email' } },
-          { path: 'items', populate: [{ path: 'drawingSpecification' }, { path: 'templateSourceId' }] }
-        ]
-      });
+    try {
+      header = await populateHeader(QuotationHeader.findOne({ quotationNumber: quotationIdentifier }));
+    } catch (error) {
+      console.error('Error finding header by quotationNumber:', error);
+    }
+  }
+  
+  // If still not found and it's a valid ObjectId, try one more time with mongoose.Types.ObjectId
+  if (!header && isValidObjectId) {
+    try {
+      const mongoose = require('mongoose');
+      const objectId = new mongoose.Types.ObjectId(quotationIdentifier);
+      header = await populateHeader(QuotationHeader.findById(objectId));
+    } catch (error) {
+      console.error('Error finding header with ObjectId conversion:', error);
+    }
   }
   
   if (!header) {
-    throw new Error('Quotation header not found');
+    console.error(`Quotation header not found for identifier: ${quotationIdentifier}`);
+    throw new Error(`Quotation header not found for identifier: ${quotationIdentifier}`);
   }
 
   const offers = await QuotationOffer.find({ quotationHeaderId: header._id })
@@ -781,6 +792,8 @@ const getQuotationOffers = async (quotationIdentifier) => {
       path: 'notesImages',
       model: 'NotesImage'
     })
+    .populate('downloadApproval.engineerApproval.approvedBy', 'fullName email')
+    .populate('downloadApproval.managementApproval.approvedBy', 'fullName email')
     .sort({ offerNumberInQuotation: 1, revision: 1 }); // Sort by offer number, then revision
 
 
