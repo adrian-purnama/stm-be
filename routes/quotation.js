@@ -1384,6 +1384,25 @@ router.delete('/:quotationId/offers/:offerId', authenticateToken, authorize(['qu
 // DOWNLOAD APPROVAL ROUTES
 // ============================================================================
 
+// Handle OPTIONS for approval routes - MUST be before the actual routes
+router.options('/:quotationNumber/offers/:offerId/approve/engineer', (req, res) => {
+  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.header('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  res.header('Access-Control-Max-Age', '86400');
+  return res.status(200).end();
+});
+
+router.options('/:quotationNumber/offers/:offerId/approve/management', (req, res) => {
+  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.header('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  res.header('Access-Control-Max-Age', '86400');
+  return res.status(200).end();
+});
+
 // Approve/reject offer as engineer
 router.post('/:quotationNumber/offers/:offerId/approve/engineer', (req, res, next) => {
   // Set CORS headers before authentication

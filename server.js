@@ -34,27 +34,29 @@ const corsOptions = {
   preflightContinue: false
 };
 
-// Apply CORS middleware BEFORE any routes
-app.use(cors(corsOptions));
-
-// Explicitly handle OPTIONS requests BEFORE the catch-all 404 handler
-app.options('*', cors(corsOptions));
-
-// Add a manual OPTIONS handler as backup - Allow all origins
+// CRITICAL: Handle OPTIONS requests FIRST, before any other middleware
 app.use((req, res, next) => {
+  // Set CORS headers for ALL requests (including OPTIONS)
+  const origin = req.headers.origin || '*';
+  res.header('Access-Control-Allow-Origin', origin);
+  res.header('Access-Control-Allow-Credentials', 'true');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+  res.header('Access-Control-Expose-Headers', 'Content-Disposition');
+  
+  // Handle OPTIONS preflight requests immediately
   if (req.method === 'OPTIONS') {
-    res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
-    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
-    res.header('Access-Control-Allow-Credentials', 'true');
     res.header('Access-Control-Max-Age', '86400'); // 24 hours
     return res.status(200).end();
   }
-  // Set CORS headers for all requests
-  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
-  res.header('Access-Control-Allow-Credentials', 'true');
   next();
 });
+
+// Apply CORS middleware as additional layer
+app.use(cors(corsOptions));
+
+// Explicitly handle OPTIONS requests with CORS
+app.options('*', cors(corsOptions));
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -251,6 +253,10 @@ app.get('/api/health', (req, res) => {
 });
 
 app.use((err, req, res, next) => {
+  // Set CORS headers even on errors
+  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  
   console.error('🚨 SERVER ERROR:', {
     message: err.message,
     stack: err.stack,
