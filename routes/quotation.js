@@ -946,142 +946,6 @@ router.get('/pending-approval', authenticateToken, authorize(['engineer_download
   }
 });
 
-// ============================================================================
-// APPROVAL ROUTES (placed before /:quotationNumber to avoid route conflicts)
-// ============================================================================
-
-// Approve/reject offer as engineer - using new route structure to avoid encoded slash issues
-router.post('/approve/engineer/:quotationNumber/:offerId', authenticateToken, authorize(['engineer_download_approver']), async (req, res) => {
-  try {
-    let { quotationNumber, offerId } = req.params;
-    // Decode URL-encoded quotation number (handles quotation numbers with slashes)
-    quotationNumber = decodeURIComponent(quotationNumber);
-    
-    const { action, note } = req.body; // action: 'approve' or 'reject', note: required for reject
-    
-    if (!action || !['approve', 'reject'].includes(action)) {
-      return sendErrorResponse(res, 400, 'Invalid action', 'Action must be either "approve" or "reject"');
-    }
-    
-    if (action === 'reject' && (!note || !note.trim())) {
-      return sendErrorResponse(res, 400, 'Rejection note required', 'A note is required when rejecting an offer');
-    }
-    
-    const offer = await QuotationOffer.findById(offerId)
-      .populate('quotationHeaderId');
-    
-    if (!offer) {
-      return sendErrorResponse(res, 404, 'Offer not found');
-    }
-    
-    // Get header ID from offer
-    const offerHeaderId = offer.quotationHeaderId?._id || offer.quotationHeaderId;
-    
-    // Verify offer belongs to the quotation - try finding by quotationNumber first, then by _id
-    let header = await QuotationHeader.findOne({ quotationNumber });
-    if (!header) {
-      // If quotationNumber lookup fails, try to find by _id if quotationNumber is actually an _id
-      header = await QuotationHeader.findById(quotationNumber);
-    }
-    
-    if (!header || !offerHeaderId || offerHeaderId.toString() !== header._id.toString()) {
-      return sendErrorResponse(res, 404, 'Offer not found in this quotation');
-    }
-    
-    // Update approval status
-    const updateData = {
-      'downloadApproval.engineerApproval.status': action === 'approve' ? 'approved' : 'rejected',
-      'downloadApproval.engineerApproval.approvedBy': req.user.userId,
-      'downloadApproval.engineerApproval.approvedAt': new Date()
-    };
-    
-    if (action === 'reject') {
-      updateData['downloadApproval.engineerApproval.rejectionNote'] = note.trim();
-    } else {
-      updateData['downloadApproval.engineerApproval.rejectionNote'] = '';
-    }
-    
-    await QuotationOffer.findByIdAndUpdate(offerId, { $set: updateData });
-    
-    const updatedOffer = await QuotationOffer.findById(offerId)
-      .populate('downloadApproval.engineerApproval.approvedBy', 'fullName email')
-      .populate('quotationHeaderId');
-    
-    return sendSuccessResponse(res, 200, `Offer ${action === 'approve' ? 'approved' : 'rejected'} successfully`, updatedOffer);
-  } catch (error) {
-    console.error('Error updating engineer approval:', error);
-    return sendErrorResponse(res, 500, 'Failed to update approval', error.message);
-  }
-});
-
-// Approve/reject offer as management - using new route structure to avoid encoded slash issues
-router.post('/approve/management/:quotationNumber/:offerId', authenticateToken, authorize(['quotation_download_approver']), async (req, res) => {
-  try {
-    let { quotationNumber, offerId } = req.params;
-    // Decode URL-encoded quotation number (handles quotation numbers with slashes)
-    quotationNumber = decodeURIComponent(quotationNumber);
-    
-    const { action, note } = req.body; // action: 'approve' or 'reject', note: required for reject
-    
-    if (!action || !['approve', 'reject'].includes(action)) {
-      return sendErrorResponse(res, 400, 'Invalid action', 'Action must be either "approve" or "reject"');
-    }
-    
-    if (action === 'reject' && (!note || !note.trim())) {
-      return sendErrorResponse(res, 400, 'Rejection note required', 'A note is required when rejecting an offer');
-    }
-    
-    const offer = await QuotationOffer.findById(offerId)
-      .populate('quotationHeaderId');
-    
-    if (!offer) {
-      return sendErrorResponse(res, 404, 'Offer not found');
-    }
-    
-    // Get header ID from offer
-    const offerHeaderId = offer.quotationHeaderId?._id || offer.quotationHeaderId;
-    
-    // Verify offer belongs to the quotation - try finding by quotationNumber first, then by _id
-    let header = await QuotationHeader.findOne({ quotationNumber });
-    if (!header) {
-      // If quotationNumber lookup fails, try to find by _id if quotationNumber is actually an _id
-      header = await QuotationHeader.findById(quotationNumber);
-    }
-    
-    if (!header || !offerHeaderId || offerHeaderId.toString() !== header._id.toString()) {
-      return sendErrorResponse(res, 404, 'Offer not found in this quotation');
-    }
-    
-    // Update approval status
-    const updateData = {
-      'downloadApproval.managementApproval.status': action === 'approve' ? 'approved' : 'rejected',
-      'downloadApproval.managementApproval.approvedBy': req.user.userId,
-      'downloadApproval.managementApproval.approvedAt': new Date()
-    };
-    
-    if (action === 'reject') {
-      updateData['downloadApproval.managementApproval.rejectionNote'] = note.trim();
-    } else {
-      updateData['downloadApproval.managementApproval.rejectionNote'] = '';
-    }
-    
-    await QuotationOffer.findByIdAndUpdate(offerId, { $set: updateData });
-    
-    const updatedOffer = await QuotationOffer.findById(offerId)
-      .populate('downloadApproval.managementApproval.approvedBy', 'fullName email')
-      .populate('quotationHeaderId');
-    
-    return sendSuccessResponse(res, 200, `Offer ${action === 'approve' ? 'approved' : 'rejected'} successfully`, updatedOffer);
-  } catch (error) {
-    console.error('Error updating management approval:', error);
-    return sendErrorResponse(res, 500, 'Failed to update approval', error.message);
-  }
-});
-
-// ============================================================================
-// QUOTATION ROUTES
-// ============================================================================
-
 // Get specific quotation by quotation number
 router.get('/:quotationNumber', authenticateToken, authorize(['quotation_view']), async (req, res) => {
   try {
@@ -1518,9 +1382,135 @@ router.delete('/:quotationId/offers/:offerId', authenticateToken, authorize(['qu
 
 // ============================================================================
 // DOWNLOAD APPROVAL ROUTES
-// Moved to top of file (before /:quotationNumber route) to avoid route conflicts
-// New routes: /approve/engineer/:quotationNumber/:offerId and /approve/management/:quotationNumber/:offerId
 // ============================================================================
+
+// Approve/reject offer as engineer
+router.post('/:quotationNumber/offers/:offerId/approve/engineer', authenticateToken, authorize(['engineer_download_approver']), async (req, res) => {
+  try {
+    let { quotationNumber, offerId } = req.params;
+    // Decode URL-encoded quotation number (handles quotation numbers with slashes)
+    quotationNumber = decodeURIComponent(quotationNumber);
+    
+    const { action, note } = req.body; // action: 'approve' or 'reject', note: required for reject
+    
+    if (!action || !['approve', 'reject'].includes(action)) {
+      return sendErrorResponse(res, 400, 'Invalid action', 'Action must be either "approve" or "reject"');
+    }
+    
+    if (action === 'reject' && (!note || !note.trim())) {
+      return sendErrorResponse(res, 400, 'Rejection note required', 'A note is required when rejecting an offer');
+    }
+    
+    const offer = await QuotationOffer.findById(offerId)
+      .populate('quotationHeaderId');
+    
+    if (!offer) {
+      return sendErrorResponse(res, 404, 'Offer not found');
+    }
+    
+    // Get header ID from offer
+    const offerHeaderId = offer.quotationHeaderId?._id || offer.quotationHeaderId;
+    
+    // Verify offer belongs to the quotation - try finding by quotationNumber first, then by _id
+    let header = await QuotationHeader.findOne({ quotationNumber });
+    if (!header) {
+      // If quotationNumber lookup fails, try to find by _id if quotationNumber is actually an _id
+      header = await QuotationHeader.findById(quotationNumber);
+    }
+    
+    if (!header || !offerHeaderId || offerHeaderId.toString() !== header._id.toString()) {
+      return sendErrorResponse(res, 404, 'Offer not found in this quotation');
+    }
+    
+    // Update approval status
+    const updateData = {
+      'downloadApproval.engineerApproval.status': action === 'approve' ? 'approved' : 'rejected',
+      'downloadApproval.engineerApproval.approvedBy': req.user.userId,
+      'downloadApproval.engineerApproval.approvedAt': new Date()
+    };
+    
+    if (action === 'reject') {
+      updateData['downloadApproval.engineerApproval.rejectionNote'] = note.trim();
+    } else {
+      updateData['downloadApproval.engineerApproval.rejectionNote'] = '';
+    }
+    
+    await QuotationOffer.findByIdAndUpdate(offerId, { $set: updateData });
+    
+    const updatedOffer = await QuotationOffer.findById(offerId)
+      .populate('downloadApproval.engineerApproval.approvedBy', 'fullName email')
+      .populate('quotationHeaderId');
+    
+    return sendSuccessResponse(res, 200, `Offer ${action === 'approve' ? 'approved' : 'rejected'} successfully`, updatedOffer);
+  } catch (error) {
+    console.error('Error updating engineer approval:', error);
+    return sendErrorResponse(res, 500, 'Failed to update approval', error.message);
+  }
+});
+
+// Approve/reject offer as management
+router.post('/:quotationNumber/offers/:offerId/approve/management', authenticateToken, authorize(['quotation_download_approver']), async (req, res) => {
+  try {
+    let { quotationNumber, offerId } = req.params;
+    // Decode URL-encoded quotation number (handles quotation numbers with slashes)
+    quotationNumber = decodeURIComponent(quotationNumber);
+    
+    const { action, note } = req.body; // action: 'approve' or 'reject', note: required for reject
+    
+    if (!action || !['approve', 'reject'].includes(action)) {
+      return sendErrorResponse(res, 400, 'Invalid action', 'Action must be either "approve" or "reject"');
+    }
+    
+    if (action === 'reject' && (!note || !note.trim())) {
+      return sendErrorResponse(res, 400, 'Rejection note required', 'A note is required when rejecting an offer');
+    }
+    
+    const offer = await QuotationOffer.findById(offerId)
+      .populate('quotationHeaderId');
+    
+    if (!offer) {
+      return sendErrorResponse(res, 404, 'Offer not found');
+    }
+    
+    // Get header ID from offer
+    const offerHeaderId = offer.quotationHeaderId?._id || offer.quotationHeaderId;
+    
+    // Verify offer belongs to the quotation - try finding by quotationNumber first, then by _id
+    let header = await QuotationHeader.findOne({ quotationNumber });
+    if (!header) {
+      // If quotationNumber lookup fails, try to find by _id if quotationNumber is actually an _id
+      header = await QuotationHeader.findById(quotationNumber);
+    }
+    
+    if (!header || !offerHeaderId || offerHeaderId.toString() !== header._id.toString()) {
+      return sendErrorResponse(res, 404, 'Offer not found in this quotation');
+    }
+    
+    // Update approval status
+    const updateData = {
+      'downloadApproval.managementApproval.status': action === 'approve' ? 'approved' : 'rejected',
+      'downloadApproval.managementApproval.approvedBy': req.user.userId,
+      'downloadApproval.managementApproval.approvedAt': new Date()
+    };
+    
+    if (action === 'reject') {
+      updateData['downloadApproval.managementApproval.rejectionNote'] = note.trim();
+    } else {
+      updateData['downloadApproval.managementApproval.rejectionNote'] = '';
+    }
+    
+    await QuotationOffer.findByIdAndUpdate(offerId, { $set: updateData });
+    
+    const updatedOffer = await QuotationOffer.findById(offerId)
+      .populate('downloadApproval.managementApproval.approvedBy', 'fullName email')
+      .populate('quotationHeaderId');
+    
+    return sendSuccessResponse(res, 200, `Offer ${action === 'approve' ? 'approved' : 'rejected'} successfully`, updatedOffer);
+  } catch (error) {
+    console.error('Error updating management approval:', error);
+    return sendErrorResponse(res, 500, 'Failed to update approval', error.message);
+  }
+});
 
 // ============================================================================
 // OFFER ITEMS MANAGEMENT ROUTES

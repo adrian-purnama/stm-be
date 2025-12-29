@@ -23,37 +23,9 @@ const PORT = process.env.PORT || 5000;
 //   credentials: true
 // }));
 
+// CORS configuration - Allow all origins
 const corsOptions = {
-  origin: function (origin, callback) {
-    // Allow requests with no origin (like mobile apps, Postman, curl)
-    if (!origin) return callback(null, true);
-    
-    const allowedOrigins = [
-      process.env.FRONTEND_URL,
-      process.env.CATALOGUE_URL,
-      'http://localhost:5173',
-      'https://uat-stm-portal.stm-asb.co.id',
-      'https://stm-portal.stm-asb.co.id',
-      'http://stm-portal.stm-asb.co.id',
-      'http://72.61.208.60:3501',
-      'https://be-uat-stm-portal.stm-asb.co.id', // Backend domain (if needed)
-    ].filter(Boolean); // Remove undefined/null values
-    
-    // In development/preprod, allow all origins
-    if (process.env.NODE_ENV_BUILD !== 'production') {
-      // console.log(`✅ CORS: Allowing origin ${origin} (non-production mode)`);
-      return callback(null, true);
-    }
-    
-    // In production, check against allowed list
-    if (allowedOrigins.includes(origin)) {
-      // console.log(`✅ CORS: Allowing origin ${origin}`);
-      callback(null, true);
-    } else {
-      console.log(`❌ CORS: Blocking origin ${origin}`);
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
+  origin: true, // Allow all origins
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
   exposedHeaders: ['Content-Disposition'],
@@ -68,7 +40,7 @@ app.use(cors(corsOptions));
 // Explicitly handle OPTIONS requests BEFORE the catch-all 404 handler
 app.options('*', cors(corsOptions));
 
-// Add a manual OPTIONS handler as backup
+// Add a manual OPTIONS handler as backup - Allow all origins
 app.use((req, res, next) => {
   if (req.method === 'OPTIONS') {
     res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
@@ -78,6 +50,9 @@ app.use((req, res, next) => {
     res.header('Access-Control-Max-Age', '86400'); // 24 hours
     return res.status(200).end();
   }
+  // Set CORS headers for all requests
+  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.header('Access-Control-Allow-Credentials', 'true');
   next();
 });
 
