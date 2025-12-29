@@ -1385,7 +1385,17 @@ router.delete('/:quotationId/offers/:offerId', authenticateToken, authorize(['qu
 // ============================================================================
 
 // Approve/reject offer as engineer
-router.post('/:quotationNumber/offers/:offerId/approve/engineer', authenticateToken, authorize(['engineer_download_approver']), async (req, res) => {
+router.post('/:quotationNumber/offers/:offerId/approve/engineer', (req, res, next) => {
+  // Set CORS headers before authentication
+  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  if (req.method === 'OPTIONS') {
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+    return res.status(200).end();
+  }
+  next();
+}, authenticateToken, authorize(['engineer_download_approver']), async (req, res) => {
   try {
     let { quotationNumber, offerId } = req.params;
     // Decode URL-encoded quotation number (handles quotation numbers with slashes)
@@ -1449,7 +1459,17 @@ router.post('/:quotationNumber/offers/:offerId/approve/engineer', authenticateTo
 });
 
 // Approve/reject offer as management
-router.post('/:quotationNumber/offers/:offerId/approve/management', authenticateToken, authorize(['quotation_download_approver']), async (req, res) => {
+router.post('/:quotationNumber/offers/:offerId/approve/management', (req, res, next) => {
+  // Set CORS headers before authentication
+  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  if (req.method === 'OPTIONS') {
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+    return res.status(200).end();
+  }
+  next();
+}, authenticateToken, authorize(['quotation_download_approver']), async (req, res) => {
   try {
     let { quotationNumber, offerId } = req.params;
     // Decode URL-encoded quotation number (handles quotation numbers with slashes)

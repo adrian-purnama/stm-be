@@ -267,10 +267,18 @@ app.use((err, req, res, next) => {
 });
 
 app.use('*', (req, res) => {
-  // Don't interfere with OPTIONS requests
+  // Set CORS headers for all requests (including OPTIONS)
+  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  
+  // Handle OPTIONS preflight requests
   if (req.method === 'OPTIONS') {
+    res.header('Access-Control-Max-Age', '86400'); // 24 hours
     return res.status(200).end();
   }
+  
   res.status(404).json({
     success: false,
     message: 'Route not found'
