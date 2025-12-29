@@ -87,7 +87,7 @@ const connectDB = async () => {
     await fixChassisTypeIndexes();
     
     // Auto-approve all existing offers (migration)
-   // await autoApproveExistingOffers();
+   await autoApproveExistingOffers();
   } catch (error) {
     console.error('❌ MongoDB connection error:', error);
     process.exit(1);
