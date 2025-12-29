@@ -1384,8 +1384,8 @@ router.delete('/:quotationId/offers/:offerId', authenticateToken, authorize(['qu
 // DOWNLOAD APPROVAL ROUTES
 // ============================================================================
 
-// Handle OPTIONS for approval routes - MUST be before the actual routes
-router.options('/:quotationNumber/offers/:offerId/approve/engineer', (req, res) => {
+// Handle OPTIONS for approval routes - Simple routes, no URL params
+router.options('/approve/engineer', (req, res) => {
   res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
   res.header('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
@@ -1394,7 +1394,7 @@ router.options('/:quotationNumber/offers/:offerId/approve/engineer', (req, res) 
   return res.status(200).end();
 });
 
-router.options('/:quotationNumber/offers/:offerId/approve/management', (req, res) => {
+router.options('/approve/management', (req, res) => {
   res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
   res.header('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
@@ -1403,8 +1403,8 @@ router.options('/:quotationNumber/offers/:offerId/approve/management', (req, res
   return res.status(200).end();
 });
 
-// Approve/reject offer as engineer
-router.post('/:quotationNumber/offers/:offerId/approve/engineer', (req, res, next) => {
+// Approve/reject offer as engineer - All data in body to avoid CORS issues
+router.post('/approve/engineer', (req, res, next) => {
   // Set CORS headers before authentication
   res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
   res.header('Access-Control-Allow-Credentials', 'true');
@@ -1416,11 +1416,16 @@ router.post('/:quotationNumber/offers/:offerId/approve/engineer', (req, res, nex
   next();
 }, authenticateToken, authorize(['engineer_download_approver']), async (req, res) => {
   try {
-    let { quotationNumber, offerId } = req.params;
-    // Decode URL-encoded quotation number (handles quotation numbers with slashes)
-    quotationNumber = decodeURIComponent(quotationNumber);
+    const { quotationHeaderId, offerId, action, note } = req.body;
     
-    const { action, note } = req.body; // action: 'approve' or 'reject', note: required for reject
+    // Validate required fields
+    if (!quotationHeaderId) {
+      return sendErrorResponse(res, 400, 'Quotation header ID required', 'quotationHeaderId must be provided in request body');
+    }
+    
+    if (!offerId) {
+      return sendErrorResponse(res, 400, 'Offer ID required', 'offerId must be provided in request body');
+    }
     
     if (!action || !['approve', 'reject'].includes(action)) {
       return sendErrorResponse(res, 400, 'Invalid action', 'Action must be either "approve" or "reject"');
@@ -1430,6 +1435,17 @@ router.post('/:quotationNumber/offers/:offerId/approve/engineer', (req, res, nex
       return sendErrorResponse(res, 400, 'Rejection note required', 'A note is required when rejecting an offer');
     }
     
+    // Find quotation header (by _id or quotationNumber)
+    let header = await QuotationHeader.findById(quotationHeaderId);
+    if (!header) {
+      header = await QuotationHeader.findOne({ quotationNumber: quotationHeaderId });
+    }
+    
+    if (!header) {
+      return sendErrorResponse(res, 404, 'Quotation header not found');
+    }
+    
+    // Find offer
     const offer = await QuotationOffer.findById(offerId)
       .populate('quotationHeaderId');
     
@@ -1437,18 +1453,10 @@ router.post('/:quotationNumber/offers/:offerId/approve/engineer', (req, res, nex
       return sendErrorResponse(res, 404, 'Offer not found');
     }
     
-    // Get header ID from offer
+    // Verify offer belongs to the quotation
     const offerHeaderId = offer.quotationHeaderId?._id || offer.quotationHeaderId;
-    
-    // Verify offer belongs to the quotation - try finding by quotationNumber first, then by _id
-    let header = await QuotationHeader.findOne({ quotationNumber });
-    if (!header) {
-      // If quotationNumber lookup fails, try to find by _id if quotationNumber is actually an _id
-      header = await QuotationHeader.findById(quotationNumber);
-    }
-    
-    if (!header || !offerHeaderId || offerHeaderId.toString() !== header._id.toString()) {
-      return sendErrorResponse(res, 404, 'Offer not found in this quotation');
+    if (!offerHeaderId || offerHeaderId.toString() !== header._id.toString()) {
+      return sendErrorResponse(res, 404, 'Offer does not belong to this quotation');
     }
     
     // Update approval status
@@ -1477,8 +1485,8 @@ router.post('/:quotationNumber/offers/:offerId/approve/engineer', (req, res, nex
   }
 });
 
-// Approve/reject offer as management
-router.post('/:quotationNumber/offers/:offerId/approve/management', (req, res, next) => {
+// Approve/reject offer as management - All data in body to avoid CORS issues
+router.post('/approve/management', (req, res, next) => {
   // Set CORS headers before authentication
   res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
   res.header('Access-Control-Allow-Credentials', 'true');
@@ -1490,11 +1498,16 @@ router.post('/:quotationNumber/offers/:offerId/approve/management', (req, res, n
   next();
 }, authenticateToken, authorize(['quotation_download_approver']), async (req, res) => {
   try {
-    let { quotationNumber, offerId } = req.params;
-    // Decode URL-encoded quotation number (handles quotation numbers with slashes)
-    quotationNumber = decodeURIComponent(quotationNumber);
+    const { quotationHeaderId, offerId, action, note } = req.body;
     
-    const { action, note } = req.body; // action: 'approve' or 'reject', note: required for reject
+    // Validate required fields
+    if (!quotationHeaderId) {
+      return sendErrorResponse(res, 400, 'Quotation header ID required', 'quotationHeaderId must be provided in request body');
+    }
+    
+    if (!offerId) {
+      return sendErrorResponse(res, 400, 'Offer ID required', 'offerId must be provided in request body');
+    }
     
     if (!action || !['approve', 'reject'].includes(action)) {
       return sendErrorResponse(res, 400, 'Invalid action', 'Action must be either "approve" or "reject"');
@@ -1504,6 +1517,17 @@ router.post('/:quotationNumber/offers/:offerId/approve/management', (req, res, n
       return sendErrorResponse(res, 400, 'Rejection note required', 'A note is required when rejecting an offer');
     }
     
+    // Find quotation header (by _id or quotationNumber)
+    let header = await QuotationHeader.findById(quotationHeaderId);
+    if (!header) {
+      header = await QuotationHeader.findOne({ quotationNumber: quotationHeaderId });
+    }
+    
+    if (!header) {
+      return sendErrorResponse(res, 404, 'Quotation header not found');
+    }
+    
+    // Find offer
     const offer = await QuotationOffer.findById(offerId)
       .populate('quotationHeaderId');
     
@@ -1511,18 +1535,10 @@ router.post('/:quotationNumber/offers/:offerId/approve/management', (req, res, n
       return sendErrorResponse(res, 404, 'Offer not found');
     }
     
-    // Get header ID from offer
+    // Verify offer belongs to the quotation
     const offerHeaderId = offer.quotationHeaderId?._id || offer.quotationHeaderId;
-    
-    // Verify offer belongs to the quotation - try finding by quotationNumber first, then by _id
-    let header = await QuotationHeader.findOne({ quotationNumber });
-    if (!header) {
-      // If quotationNumber lookup fails, try to find by _id if quotationNumber is actually an _id
-      header = await QuotationHeader.findById(quotationNumber);
-    }
-    
-    if (!header || !offerHeaderId || offerHeaderId.toString() !== header._id.toString()) {
-      return sendErrorResponse(res, 404, 'Offer not found in this quotation');
+    if (!offerHeaderId || offerHeaderId.toString() !== header._id.toString()) {
+      return sendErrorResponse(res, 404, 'Offer does not belong to this quotation');
     }
     
     // Update approval status
