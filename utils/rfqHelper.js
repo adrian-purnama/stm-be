@@ -5,8 +5,13 @@ const { getRfqDocumentsGridFS } = require('./gridfsHelper');
 const rfqDocumentsGridFS = getRfqDocumentsGridFS();
 
 // Generate RFQ number
-const generateRFQNumber = async () => {
-  console.log('[generateRFQNumber] Starting RFQ number generation');
+const generateRFQNumber = async (retryCount = 0, maxRetries = 10) => {
+  if (retryCount >= maxRetries) {
+    console.error('[generateRFQNumber] ERROR: Max retries reached!', { retryCount, maxRetries });
+    throw new Error(`Failed to generate unique RFQ number after ${maxRetries} retries. Possible database issue.`);
+  }
+  
+  console.log('[generateRFQNumber] ========== START (attempt ' + (retryCount + 1) + ') ==========');
   const memStart = process.memoryUsage();
   const now = new Date();
   const year = now.getFullYear();
@@ -19,61 +24,127 @@ const generateRFQNumber = async () => {
   };
   const romanMonth = romanMonths[month];
   
-  // Find all RFQs for this month and year - OPTIMIZED: use lean() and only select rfqNumber
   const startOfMonth = new Date(year, month - 1, 1);
   const endOfMonth = new Date(year, month, 0);
   
-  console.log('[generateRFQNumber] Querying RFQs for month:', { startOfMonth, endOfMonth });
-  const rfqs = await RFQ.find({
-    createdAt: {
-      $gte: startOfMonth,
-      $lte: endOfMonth
-    }
-  })
-  .select('rfqNumber')
-  .lean(); // CRITICAL: Use lean() to return plain objects instead of Mongoose documents
-
-  const memAfterQuery = process.memoryUsage();
-  console.log('[generateRFQNumber] RFQs fetched:', {
-    count: rfqs.length,
-    memoryDelta: `${((memAfterQuery.heapUsed - memStart.heapUsed) / 1024 / 1024).toFixed(2)} MB`
+  console.log('[generateRFQNumber] Date range:', { 
+    startOfMonth: startOfMonth.toISOString(), 
+    endOfMonth: endOfMonth.toISOString(),
+    year,
+    month,
+    romanMonth
   });
-
-  // Extract the highest number from existing RFQ numbers for this month
-  let highestNumber = 0;
-  const rfqPattern = new RegExp(`^(\\d+)/RFQ/STM/${romanMonth}/${year}$`);
   
-  rfqs.forEach(rfq => {
-    if (rfq.rfqNumber) {
-      const match = rfq.rfqNumber.match(rfqPattern);
-      if (match) {
-        const number = parseInt(match[1], 10);
-        if (number > highestNumber) {
-          highestNumber = number;
+  // OPTIMIZED: Use aggregation pipeline to find max number directly in MongoDB
+  // This is much more efficient than fetching all RFQs and processing in memory
+  const pipeline = [
+    {
+      $match: {
+        createdAt: {
+          $gte: startOfMonth,
+          $lte: endOfMonth
+        },
+        rfqNumber: { $exists: true, $ne: null }
+      }
+    },
+    {
+      $project: {
+        rfqNumber: 1,
+        number: {
+          $toInt: {
+            $arrayElemAt: [
+              {
+                $split: ['$rfqNumber', '/']
+              },
+              0
+            ]
+          }
         }
       }
+    },
+    {
+      $match: {
+        number: { $gte: 1 }
+      }
+    },
+    {
+      $group: {
+        _id: null,
+        maxNumber: { $max: '$number' },
+        allNumbers: { $push: '$number' }
+      }
     }
+  ];
+  
+  console.log('[generateRFQNumber] Running aggregation pipeline...');
+  let result;
+  try {
+    result = await RFQ.aggregate(pipeline).allowDiskUse(true);
+    console.log('[generateRFQNumber] Aggregation result:', JSON.stringify(result, null, 2));
+  } catch (aggError) {
+    console.error('[generateRFQNumber] Aggregation error:', aggError);
+    throw aggError;
+  }
+  
+  const highestNumber = result.length > 0 && result[0].maxNumber ? result[0].maxNumber : 0;
+  const allNumbers = result.length > 0 && result[0].allNumbers ? result[0].allNumbers.sort((a, b) => b - a).slice(0, 10) : [];
+  
+  const memAfterQuery = process.memoryUsage();
+  console.log('[generateRFQNumber] Analysis:', {
+    highestNumber,
+    totalRFQsInRange: result.length > 0 ? result[0].allNumbers?.length || 0 : 0,
+    top10Numbers: allNumbers,
+    memoryDelta: `${((memAfterQuery.heapUsed - memStart.heapUsed) / 1024 / 1024).toFixed(2)} MB`
   });
 
   const nextNumber = highestNumber + 1;
   const rfqNumber = `${nextNumber}/RFQ/STM/${romanMonth}/${year}`;
   
-  console.log('[generateRFQNumber] Generated number:', rfqNumber);
+  console.log('[generateRFQNumber] Generated candidate number:', rfqNumber);
   
   // Double-check that this number doesn't already exist (race condition protection)
-  // OPTIMIZED: Use lean() and only check existence
-  const existingRFQ = await RFQ.findOne({ rfqNumber }).select('_id').lean();
+  console.log('[generateRFQNumber] Checking if number exists in database...');
+  let existingRFQ;
+  try {
+    existingRFQ = await RFQ.findOne({ rfqNumber }).select('_id rfqNumber createdAt').lean();
+    console.log('[generateRFQNumber] Existence check result:', existingRFQ ? {
+      exists: true,
+      id: existingRFQ._id,
+      rfqNumber: existingRFQ.rfqNumber,
+      createdAt: existingRFQ.createdAt
+    } : { exists: false });
+  } catch (checkError) {
+    console.error('[generateRFQNumber] Error checking existence:', checkError);
+    throw checkError;
+  }
+  
   if (existingRFQ) {
-    console.log('[generateRFQNumber] Number exists, recursing...');
-    // If it exists, recursively call to get the next number
-    return await generateRFQNumber();
+    console.log('[generateRFQNumber] ⚠️  NUMBER EXISTS! Details:', {
+      existingId: existingRFQ._id,
+      existingNumber: existingRFQ.rfqNumber,
+      existingCreatedAt: existingRFQ.createdAt,
+      isInDateRange: existingRFQ.createdAt >= startOfMonth && existingRFQ.createdAt <= endOfMonth,
+      retryCount: retryCount + 1,
+      willRetry: retryCount + 1 < maxRetries
+    });
+    
+    if (retryCount + 1 >= maxRetries) {
+      console.error('[generateRFQNumber] ❌ MAX RETRIES REACHED - STOPPING RECURSION');
+      throw new Error(`Failed to generate unique RFQ number after ${maxRetries} retries. Number ${rfqNumber} already exists.`);
+    }
+    
+    console.log('[generateRFQNumber] 🔄 Recursing to try next number...');
+    // If it exists, try the next number (increment and retry)
+    return await generateRFQNumber(retryCount + 1, maxRetries);
   }
   
   const memEnd = process.memoryUsage();
-  console.log('[generateRFQNumber] RFQ number generation complete:', {
+  console.log('[generateRFQNumber] ✅ SUCCESS - Number is unique:', {
     rfqNumber,
+    retryCount,
     totalMemoryDelta: `${((memEnd.heapUsed - memStart.heapUsed) / 1024 / 1024).toFixed(2)} MB`
   });
+  console.log('[generateRFQNumber] ========== END (attempt ' + (retryCount + 1) + ') ==========');
   
   return rfqNumber;
 };
