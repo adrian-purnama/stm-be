@@ -1105,7 +1105,12 @@ router.post('/', authenticateToken, authorize(['quotation_requester']), async (r
       // If not draft and no engineeringId: No email (will go to approver later via submit-to-engineering)
     }
     
-    return sendSuccessResponse(res, 201, 'RFQ created successfully', { rfq });
+    return sendSuccessResponse(res, 201, 'RFQ created successfully', {
+      rfqId: rfq._id,
+      rfqNumber: rfq.rfqNumber,
+      stage: rfq.stage,
+      status: rfq.status,
+    });    
   } catch (e) {
     return sendErrorResponse(res, 500, 'Failed to create RFQ', e.message);
   }
