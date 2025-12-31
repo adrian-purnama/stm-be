@@ -635,6 +635,16 @@ router.get('/engineers', authenticateToken, async (req, res) => {
  * Description: Create a new RFQ
  */
 router.post('/', authenticateToken, authorize(['quotation_requester']), async (req, res) => {
+  const startTime = Date.now();
+  const memUsageStart = process.memoryUsage();
+  console.log('[RFQ POST] ========== START RFQ CREATION ==========');
+  console.log('[RFQ POST] Memory at start:', {
+    heapUsed: `${(memUsageStart.heapUsed / 1024 / 1024).toFixed(2)} MB`,
+    heapTotal: `${(memUsageStart.heapTotal / 1024 / 1024).toFixed(2)} MB`,
+    rss: `${(memUsageStart.rss / 1024 / 1024).toFixed(2)} MB`
+  });
+  console.log('[RFQ POST] Step 1: Request received, extracting body data');
+  
   try {
     const { 
       approverId,
@@ -665,6 +675,14 @@ router.post('/', authenticateToken, authorize(['quotation_requester']), async (r
       includePPN
     } = req.body;
     const requesterId = req.user.userId;
+    
+    console.log('[RFQ POST] Step 2: Body data extracted', {
+      itemsCount: items?.length || 0,
+      isDraft: req.body.isDraft,
+      hasEngineeringId: !!engineeringId,
+      lineOfBusinessType: lineOfBusiness?.type
+    });
+    console.log('[RFQ POST] Step 3: Normalizing data fields');
     const normalizedDeliveryTerms = normalizeString(deliveryTerms);
     const normalizedDeliveryNotes = normalizeString(deliveryNotes);
     let normalizedPaymentTerms = normalizeString(paymentTerms, DEFAULT_PAYMENT_TERMS);
@@ -686,6 +704,7 @@ router.post('/', authenticateToken, authorize(['quotation_requester']), async (r
 
     // Check if this is a draft - drafts have relaxed validation
     const isDraft = req.body.isDraft === true;
+    console.log('[RFQ POST] Step 4: Data normalized, isDraft:', isDraft);
     
     // Basic validation - required even for drafts
     if (!approverId || !quotationCreatorId || !customerName || !contactPerson?.name) {
@@ -693,12 +712,15 @@ router.post('/', authenticateToken, authorize(['quotation_requester']), async (r
     }
     
 
+    console.log('[RFQ POST] Step 5: Starting validation');
     // Engineering ID is optional
     if (engineeringId) {
-      const engineer = await User.findById(engineeringId);
+      console.log('[RFQ POST] Step 5.1: Validating engineer');
+      const engineer = await User.findById(engineeringId).select('_id email fullName').lean();
       if (!engineer) {
         return sendErrorResponse(res, 400, 'Selected engineer not found');
       }
+      console.log('[RFQ POST] Step 5.1: Engineer validated');
     }
     
     // For drafts, allow missing optional fields; for submit, require all fields
@@ -768,10 +790,11 @@ router.post('/', authenticateToken, authorize(['quotation_requester']), async (r
         }
         
         // Validate bodyTypeId and chassisTypeId exist
+        console.log('[RFQ POST] Step 5.2: Validating bodyType and chassisType');
         const BodyType = require('../models/bodyType.model');
         const ChassisType = require('../models/chassisType.model');
-        const bodyType = await BodyType.findById(bodyTypeId);
-        const chassisType = await ChassisType.findById(chassisTypeId);
+        const bodyType = await BodyType.findById(bodyTypeId).select('_id name shortName').lean();
+        const chassisType = await ChassisType.findById(chassisTypeId).select('_id name shortName').lean();
         
         if (!bodyType) {
           return sendErrorResponse(res, 400, 'Invalid body type selected');
@@ -779,6 +802,7 @@ router.post('/', authenticateToken, authorize(['quotation_requester']), async (r
         if (!chassisType) {
           return sendErrorResponse(res, 400, 'Invalid chassis type selected');
         }
+        console.log('[RFQ POST] Step 5.2: BodyType and ChassisType validated');
         
         // For karoseri, validate items array (allow empty for drafts)
         if (!isDraft && (!items || !Array.isArray(items) || items.length === 0)) {
@@ -884,17 +908,28 @@ router.post('/', authenticateToken, authorize(['quotation_requester']), async (r
       return sendErrorResponse(res, 400, 'Line of business type is required');
     }
     
+    console.log('[RFQ POST] Step 6: Validating user permissions');
     // Validate that approver has approve_rfq permission
-    const approver = await User.findById(approverId).populate('permissions');
+    console.log('[RFQ POST] Step 6.1: Fetching approver with permissions');
+    const approver = await User.findById(approverId)
+      .select('permissions')
+      .populate('permissions', 'name type includes')
+      .lean();
     if (!approver || !hasPermission(approver, 'approve_rfq')) {
       return sendErrorResponse(res, 400, 'Selected approver does not have approve_rfq permission');
     }
+    console.log('[RFQ POST] Step 6.1: Approver validated');
     
     // Validate that quotation creator has quotation_create permission
-    const quotationCreator = await User.findById(quotationCreatorId).populate('permissions');
+    console.log('[RFQ POST] Step 6.2: Fetching quotation creator with permissions');
+    const quotationCreator = await User.findById(quotationCreatorId)
+      .select('permissions')
+      .populate('permissions', 'name type includes')
+      .lean();
     if (!quotationCreator || !hasPermission(quotationCreator, 'quotation_create')) {
       return sendErrorResponse(res, 400, 'Selected quotation creator does not have quotation_create permission');
     }
+    console.log('[RFQ POST] Step 6.2: Quotation creator validated');
     
     const rfqData = {
       requesterId,
@@ -937,12 +972,29 @@ router.post('/', authenticateToken, authorize(['quotation_requester']), async (r
     // Get submit flag (isDraft already declared above)
     const submitToEngineering = req.body.submitToEngineering === true;
     
+    console.log('[RFQ POST] Step 7: Creating RFQ document');
+    const memBeforeRFQ = process.memoryUsage();
+    console.log('[RFQ POST] Memory before RFQ creation:', {
+      heapUsed: `${(memBeforeRFQ.heapUsed / 1024 / 1024).toFixed(2)} MB`,
+      heapTotal: `${(memBeforeRFQ.heapTotal / 1024 / 1024).toFixed(2)} MB`
+    });
+    
     const rfq = await createRFQ(rfqData);
     
+    const memAfterRFQ = process.memoryUsage();
+    console.log('[RFQ POST] Step 7: RFQ created successfully', {
+      rfqId: rfq._id,
+      rfqNumber: rfq.rfqNumber,
+      memoryDelta: `${((memAfterRFQ.heapUsed - memBeforeRFQ.heapUsed) / 1024 / 1024).toFixed(2)} MB`
+    });
+    
     // Create RFQ items for all types
+    console.log('[RFQ POST] Step 8: Creating RFQ items', { itemsCount: items?.length || 0 });
     if (items && items.length > 0) {
+      const memBeforeItems = process.memoryUsage();
       for (let i = 0; i < items.length; i++) {
         const item = items[i];
+        console.log(`[RFQ POST] Step 8.${i + 1}: Creating item ${i + 1}/${items.length}`);
         
         // Base item data
         const itemData = {
@@ -980,17 +1032,31 @@ router.post('/', authenticateToken, authorize(['quotation_requester']), async (r
         
         await createRFQItem(rfq._id, itemData);
       }
+      const memAfterItems = process.memoryUsage();
+      console.log('[RFQ POST] Step 8: All items created', {
+        itemsCreated: items.length,
+        memoryDelta: `${((memAfterItems.heapUsed - memBeforeItems.heapUsed) / 1024 / 1024).toFixed(2)} MB`
+      });
     }
     
     // If submit (not draft) and engineeringId is provided, automatically submit to engineering with in_progress status
     if (!isDraft && engineeringId) {
-      // Populate items first
-      await rfq.populate('items');
+      console.log('[RFQ POST] Step 9: Submitting to engineering');
+      console.log('[RFQ POST] Step 9.1: Populating items for engineering submission');
+      // Populate items first - use lean() and limit fields to reduce memory
+      await rfq.populate({
+        path: 'items',
+        select: 'itemNumber karoseri chassis chassisModel notes specifications serviceName serviceDetails estimatedRevenue quantity sparepartName pricePerUnit',
+        lean: true
+      });
+      console.log('[RFQ POST] Step 9.1: Items populated', { itemsCount: rfq.items?.length || 0 });
       
       // Submit to engineering immediately
-      const engineer = await User.findById(engineeringId);
+      console.log('[RFQ POST] Step 9.2: Fetching engineer');
+      const engineer = await User.findById(engineeringId).select('_id email fullName').lean();
       if (engineer) {
-        // Prepare specsOriginal for engineering review
+        console.log('[RFQ POST] Step 9.3: Preparing specsOriginal for engineering review');
+        // Prepare specsOriginal for engineering review - limit data to essential fields only
         let specsOriginal = [];
         if (lineOfBusinessType === 'karoseri') {
           specsOriginal = (rfq.items || []).map(item => ({
@@ -1020,6 +1086,7 @@ router.post('/', authenticateToken, authorize(['quotation_requester']), async (r
             notes: item.notes || ''
           }));
         }
+        console.log('[RFQ POST] Step 9.3: specsOriginal prepared', { specsCount: specsOriginal.length });
         
         // Update RFQ to engineering stage
         rfq.stage = 'engineering';
@@ -1043,9 +1110,12 @@ router.post('/', authenticateToken, authorize(['quotation_requester']), async (r
           notes: `RFQ submitted to engineering for review`
         });
         
+        console.log('[RFQ POST] Step 9.4: Saving RFQ with engineering data');
         await rfq.save();
+        console.log('[RFQ POST] Step 9.4: RFQ saved');
         
         // Send notification to engineer
+        console.log('[RFQ POST] Step 9.5: Sending notification to engineer');
         try {
           await addNotification({
             userId: engineeringId,
@@ -1053,14 +1123,16 @@ router.post('/', authenticateToken, authorize(['quotation_requester']), async (r
             description: `A new RFQ ${rfq.rfqNumber} has been assigned to you for engineering review.`,
             path: '/quotations'
           });
+          console.log('[RFQ POST] Step 9.5: Notification sent');
         } catch (notifError) {
-          console.error('Failed to send notification:', notifError);
+          console.error('[RFQ POST] Step 9.5: Failed to send notification:', notifError);
         }
         
         // Send email notifications: requester (created) + engineer
+        console.log('[RFQ POST] Step 9.6: Preparing email notifications');
         try {
-          const requesterUser = await User.findById(requesterId).select('email fullName');
-          const engineerUser = await User.findById(engineeringId).select('email fullName');
+          const requesterUser = await User.findById(requesterId).select('email fullName').lean();
+          const engineerUser = await User.findById(engineeringId).select('email fullName').lean();
           
           // Email to requester (RFQ created)
           if (requesterUser?.email) {
@@ -1081,15 +1153,18 @@ router.post('/', authenticateToken, authorize(['quotation_requester']), async (r
               engineerUser.fullName || engineerUser.email
             );
           }
+          console.log('[RFQ POST] Step 9.6: Emails sent');
         } catch (emailError) {
-          console.error('Failed to send RFQ creation emails:', emailError);
+          console.error('[RFQ POST] Step 9.6: Failed to send RFQ creation emails:', emailError);
         }
+        console.log('[RFQ POST] Step 9: Engineering submission complete');
       }
     } else {
       // Draft: Send email to requester that RFQ has been created
       if (isDraft) {
+        console.log('[RFQ POST] Step 10: Sending draft creation email');
         try {
-          const requesterUser = await User.findById(requesterId).select('email fullName');
+          const requesterUser = await User.findById(requesterId).select('email fullName').lean();
           if (requesterUser?.email) {
           sendRFQNotificationEmail(
               requesterUser.email,
@@ -1097,13 +1172,29 @@ router.post('/', authenticateToken, authorize(['quotation_requester']), async (r
               `Your RFQ for ${customerName} has been created and saved as draft.`,
               requesterUser.fullName || requesterUser.email
           );
+          console.log('[RFQ POST] Step 10: Draft email sent');
         }
         } catch (emailError) {
-          console.error('Failed to send draft creation email:', emailError);
+          console.error('[RFQ POST] Step 10: Failed to send draft creation email:', emailError);
       }
       }
       // If not draft and no engineeringId: No email (will go to approver later via submit-to-engineering)
     }
+    
+    const memUsageEnd = process.memoryUsage();
+    const duration = Date.now() - startTime;
+    console.log('[RFQ POST] ========== RFQ CREATION COMPLETE ==========');
+    console.log('[RFQ POST] Final memory:', {
+      heapUsed: `${(memUsageEnd.heapUsed / 1024 / 1024).toFixed(2)} MB`,
+      heapTotal: `${(memUsageEnd.heapTotal / 1024 / 1024).toFixed(2)} MB`,
+      rss: `${(memUsageEnd.rss / 1024 / 1024).toFixed(2)} MB`
+    });
+    console.log('[RFQ POST] Memory delta:', {
+      heapUsed: `${((memUsageEnd.heapUsed - memUsageStart.heapUsed) / 1024 / 1024).toFixed(2)} MB`,
+      heapTotal: `${((memUsageEnd.heapTotal - memUsageStart.heapTotal) / 1024 / 1024).toFixed(2)} MB`,
+      rss: `${((memUsageEnd.rss - memUsageStart.rss) / 1024 / 1024).toFixed(2)} MB`
+    });
+    console.log('[RFQ POST] Duration:', `${duration}ms`);
     
     return sendSuccessResponse(res, 201, 'RFQ created successfully', {
       rfqId: rfq._id,
@@ -1112,6 +1203,17 @@ router.post('/', authenticateToken, authorize(['quotation_requester']), async (r
       status: rfq.status,
     });    
   } catch (e) {
+    const memUsageError = process.memoryUsage();
+    const duration = Date.now() - startTime;
+    console.error('[RFQ POST] ========== RFQ CREATION FAILED ==========');
+    console.error('[RFQ POST] Error:', e.message);
+    console.error('[RFQ POST] Stack:', e.stack);
+    console.error('[RFQ POST] Memory at error:', {
+      heapUsed: `${(memUsageError.heapUsed / 1024 / 1024).toFixed(2)} MB`,
+      heapTotal: `${(memUsageError.heapTotal / 1024 / 1024).toFixed(2)} MB`,
+      rss: `${(memUsageError.rss / 1024 / 1024).toFixed(2)} MB`
+    });
+    console.error('[RFQ POST] Duration before error:', `${duration}ms`);
     return sendErrorResponse(res, 500, 'Failed to create RFQ', e.message);
   }
 });
@@ -1832,9 +1934,12 @@ router.patch('/:id', authenticateToken, async (req, res) => {
       'deliveryTerms', 'deliveryNotes', 'targetCloseDate', 'paymentTerms', 'inclusionNotes', 'exclusionNotes',
       'isTaxIncluded', 'includePPN'
     ];
-    const rfq = await RFQ.findById(id);
+    const rfq = await RFQ.findById(id).lean();
     if (!rfq) return sendErrorResponse(res, 404, 'RFQ not found');
-    const user = await User.findById(userId).populate('permissions');
+    const user = await User.findById(userId)
+      .select('permissions')
+      .populate('permissions', 'name type includes')
+      .lean();
     const canCreateQuotation = hasPermission(user, 'quotation_create');
     const isRequester = rfq.requesterId && rfq.requesterId.toString() === userId.toString();
     const isQuotationCreator = rfq.quotationCreatorId && rfq.quotationCreatorId.toString() === userId.toString();
@@ -1846,13 +1951,17 @@ router.patch('/:id', authenticateToken, async (req, res) => {
     if (rfq.stage !== 'sales' && rfq.stage !== 'quotation') {
       return sendErrorResponse(res, 400, 'Can only edit RFQ in sales or quotation stage');
     }
-    const original = rfq.toObject();
+    // rfq is already a plain object from lean(), no need for toObject()
+    const original = { ...rfq };
     const incomingItems = Array.isArray(req.body.items) ? req.body.items : null;
     if (incomingItems) {
       delete req.body.items;
     }
 
-    const existingItems = await RFQItem.find({ rfqId: id }).sort({ itemNumber: 1 });
+    const existingItems = await RFQItem.find({ rfqId: id })
+      .select('itemNumber templateMode templateSourceId templateSourceModel quantity estimatedRevenue karoseri chassis chassisModel bodyTypeId chassisTypeId specifications serviceName serviceDetails sparepartName pricePerUnit notes')
+      .sort({ itemNumber: 1 })
+      .lean();
 
     const normalizeItem = (item, index) => {
       const templateMode = item.templateMode || 'manual';
@@ -1972,7 +2081,8 @@ router.patch('/:id', authenticateToken, async (req, res) => {
       }
     }
 
-    const updatedSnapshot = rfq.toObject();
+    // rfq is already a plain object from lean(), no need for toObject()
+    const updatedSnapshot = { ...rfq };
     const changedFields = allowedFields.filter((field) => {
       if (!Object.prototype.hasOwnProperty.call(req.body, field)) {
         return false;
@@ -1984,6 +2094,10 @@ router.patch('/:id', authenticateToken, async (req, res) => {
       changedFields.push('items');
     }
 
+    // Convert to Mongoose document for saving and timeline update
+    const rfqDoc = await RFQ.findById(id);
+    Object.assign(rfqDoc, rfq);
+    
     if (changedFields.length > 0) {
       const snapshot = changedFields.map((field) => {
         if (field === 'items') {
@@ -1994,8 +2108,8 @@ router.patch('/:id', authenticateToken, async (req, res) => {
         return `${field}: ${before} -> ${after}`;
       }).join('; ');
 
-      rfq.timeline.push({
-        stage: rfq.stage,
+      rfqDoc.timeline.push({
+        stage: rfqDoc.stage,
         action: 'updated',
         user: userId,
         timestamp: new Date(),
@@ -2003,11 +2117,19 @@ router.patch('/:id', authenticateToken, async (req, res) => {
       });
     }
 
-    await rfq.save();
-    if (incomingItems) {
-      await rfq.populate('items');
-    }
-    return sendSuccessResponse(res, 200, 'RFQ updated', { rfq });
+    await rfqDoc.save();
+    
+    // Fetch updated RFQ with items for response
+    const updatedRfq = await RFQ.findById(id)
+      .select('rfqNumber requesterId approverId quotationCreatorId customerName contactPerson status stage items')
+      .populate({
+        path: 'items',
+        select: 'itemNumber karoseri chassis chassisModel notes specifications serviceName serviceDetails estimatedRevenue quantity sparepartName pricePerUnit',
+        lean: true
+      })
+      .lean();
+    
+    return sendSuccessResponse(res, 200, 'RFQ updated', { rfq: updatedRfq });
   } catch (e) {
     return sendErrorResponse(res, 500, 'Failed to update RFQ', e.message);
   }

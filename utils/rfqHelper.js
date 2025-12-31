@@ -285,9 +285,13 @@ const markQuotationCreated = async (rfqId, quotationId) => {
 // RFQ Item Management Functions
 const createRFQItem = async (rfqId, itemData) => {
   try {
-    // Get the next item number for this RFQ
-    const existingItems = await RFQItem.find({ rfqId }).sort({ itemNumber: -1 });
-    const nextItemNumber = existingItems.length > 0 ? existingItems[0].itemNumber + 1 : 1;
+    // Optimize: Only get the max item number instead of all items
+    // This reduces memory usage significantly for RFQs with many items
+    const maxItem = await RFQItem.findOne({ rfqId })
+      .select('itemNumber')
+      .sort({ itemNumber: -1 })
+      .lean();
+    const nextItemNumber = maxItem ? maxItem.itemNumber + 1 : 1;
     
     const item = new RFQItem({
       ...itemData,
