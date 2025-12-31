@@ -51,16 +51,14 @@ const drawingSpecificationSchema = new mongoose.Schema({
   bodyTypeId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'BodyType',
-    required: true,
-    index: true
+    required: true
   },
   
   // Optional fields per new requirements
   chassisTypeId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'ChassisType',
-    required: false,
-    index: true
+    required: false
   },
   
   chassisModel: {
@@ -73,8 +71,7 @@ const drawingSpecificationSchema = new mongoose.Schema({
   sizeTypeId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'SizeType',
-    required: false,
-    index: true
+    required: false
   },
   
   // Dimension as a single plain string (optional per new requirements)

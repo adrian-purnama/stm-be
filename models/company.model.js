@@ -29,8 +29,7 @@ const companySchema = new mongoose.Schema({
   companyName: {
     type: String,
     required: true,
-    trim: true,
-    index: true
+    trim: true
   },
   
   // Email messaging information

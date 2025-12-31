@@ -17,8 +17,7 @@ const sizeTypeSchema = new mongoose.Schema({
     type: String,
     required: true,
     unique: true,
-    trim: true,
-    index: true
+    trim: true
   },
   
   shortName: {
@@ -27,7 +26,6 @@ const sizeTypeSchema = new mongoose.Schema({
     unique: true,
     trim: true,
     uppercase: true,
-    index: true,
     maxlength: 20
   },
   

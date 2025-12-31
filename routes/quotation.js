@@ -57,9 +57,12 @@ router.get('/', authenticateToken, authorize(['quotation_view']), async (req, re
 
     const filters = rawFilters;
     
-    // Get user with permissions
-    const user = await require('../models/user.model').findById(req.user.userId).populate('permissions');
-    const userPermissions = user.permissions.map(p => p.name);
+    // Get user with permissions (optimized with lean and field selection)
+    const user = await require('../models/user.model').findById(req.user.userId)
+      .select('permissions')
+      .populate('permissions', 'name')
+      .lean();
+    const userPermissions = (user?.permissions || []).map(p => p.name || p);
     
     // Gmail-style advanced search parser
     const ops = {};
@@ -334,9 +337,12 @@ router.get('/all', authenticateToken, authorize(['all_quotation_viewer']), async
   try {
     const { page = 1, limit = 10, filterMode = 'all_viewer', ...filters } = req.query;
     
-    // Get user with permissions
-    const user = await require('../models/user.model').findById(req.user.userId).populate('permissions');
-    const userPermissions = user.permissions.map(p => p.name);
+    // Get user with permissions (optimized with lean and field selection)
+    const user = await require('../models/user.model').findById(req.user.userId)
+      .select('permissions')
+      .populate('permissions', 'name')
+      .lean();
+    const userPermissions = (user?.permissions || []).map(p => p.name || p);
     
     // Check if user has all_quotation_viewer permission
     const hasAllQuotationViewerPermission = true
@@ -767,7 +773,7 @@ router.get('/by-id/:quotationId', authenticateToken, authorize(['quotation_view'
       header = await getQuotationHeaderById(quotationId);
     } catch (error) {
       // If that fails, try to find by quotationNumber
-      header = await QuotationHeader.findOne({ quotationNumber: quotationId });
+      header = await QuotationHeader.findOne({ quotationNumber: quotationId }).lean();
     }
     
     if (!header) {
@@ -775,8 +781,9 @@ router.get('/by-id/:quotationId', authenticateToken, authorize(['quotation_view'
       return sendErrorResponse(res, 404, 'Quotation not found');
     }
     
-    // Get all offers for this quotation
-    const result = await getQuotationOffers(header.quotationNumber);
+    // Get all offers for this quotation using quotationNumber from header
+    const quotationNumber = header.quotationNumber || quotationId;
+    const result = await getQuotationOffers(quotationNumber);
     
     return sendSuccessResponse(res, 200, 'Quotation retrieved successfully', {
       header: result.header,
@@ -797,18 +804,21 @@ router.get('/:quotationNumber/header', authenticateToken, authorize(['quotation_
     const QuotationHeader = require('../models/quotationHeader.model');
     
     const header = await QuotationHeader.findOne({ quotationNumber })
+      .select('quotationNumber requesterId approverId creatorId marketingName rfqId customerName contactPerson lineOfBusiness status winSubStatus ocSequenceNumber ocNumber spkSequenceNumber spkCode spkNumber selectedOfferId selectedOfferItemIds lastFollowUpDate progress downloads createdAt updatedAt')
       .populate('requesterId', 'fullName email')
       .populate('approverId', 'fullName email')
       .populate('creatorId', 'fullName email')
       .populate('downloads.userId', 'fullName email')
       .populate({
         path: 'rfqId',
+        select: 'rfqNumber customerName contactPerson customerContacts deliveryTerms deliveryNotes targetCloseDate paymentTerms inclusionNotes exclusionNotes isTaxIncluded includePPN lineOfBusiness',
         populate: [
           { path: 'requesterId', select: 'fullName email' },
           { path: 'approverId', select: 'fullName email' },
           { path: 'quotationCreatorId', select: 'fullName email' }
         ]
-      });
+      })
+      .lean();
     
     if (!header) {
       return sendErrorResponse(res, 404, 'Quotation not found');
@@ -816,7 +826,8 @@ router.get('/:quotationNumber/header', authenticateToken, authorize(['quotation_
 
     const followUpStatus = getFollowUpStatus(header.lastFollowUpDate);
 
-    const headerObj = header.toObject();
+    // Header is already a plain object from .lean()
+    const headerObj = { ...header };
     const rfqSnapshot = headerObj.rfqId || null;
     delete headerObj.rfqId;
 
@@ -850,7 +861,10 @@ router.get('/:quotationNumber/header', authenticateToken, authorize(['quotation_
 router.get('/pending-approval', authenticateToken, authorize(['engineer_download_approver', 'quotation_download_approver']), async (req, res) => {
   try {
     console.log('[DEBUG] GET /pending-approval - Request received');
-    const user = await User.findById(req.user.userId).populate('permissions');
+    const user = await User.findById(req.user.userId)
+      .select('permissions')
+      .populate('permissions', 'name type includes')
+      .lean();
     
     // Use permission helper to check permissions (handles super_admin correctly)
     const { hasPermission, hasAnyPermission, isSuperAdmin, getAllUserPermissions } = require('../utils/permissionHelper');
@@ -870,7 +884,7 @@ router.get('/pending-approval', authenticateToken, authorize(['engineer_download
       hasEngineerPermission, 
       hasManagementPermission, 
       allUserPermissions,
-      rawPermissions: user.permissions.map(p => ({ name: p.name, type: p.type, includes: p.includes }))
+      rawPermissions: (user?.permissions || []).map(p => ({ name: p.name, type: p.type, includes: p.includes }))
     });
     
     // Build query based on user's permissions
@@ -897,10 +911,12 @@ router.get('/pending-approval', authenticateToken, authorize(['engineer_download
     console.log('[DEBUG] Approval query:', JSON.stringify(approvalQuery));
     
     const offers = await QuotationOffer.find(approvalQuery)
-      .populate('quotationHeaderId')
+      .select('quotationHeaderId downloadApproval offerNumber offerNumberInQuotation createdAt')
+      .populate('quotationHeaderId', 'quotationNumber customerName status')
       .populate('downloadApproval.engineerApproval.approvedBy', 'fullName email')
       .populate('downloadApproval.managementApproval.approvedBy', 'fullName email')
-      .sort({ createdAt: -1 });
+      .sort({ createdAt: -1 })
+      .lean();
     
     console.log('[DEBUG] Found offers:', offers.length);
     
@@ -912,11 +928,13 @@ router.get('/pending-approval', authenticateToken, authorize(['engineer_download
     
     console.log('[DEBUG] Header IDs:', headerIds.length);
     
-    // Get quotation headers by _id
+    // Get quotation headers by _id with optimized field selection
     const headers = await QuotationHeader.find({ _id: { $in: headerIds } })
+      .select('quotationNumber requesterId approverId creatorId customerName status createdAt')
       .populate('requesterId', 'fullName email')
       .populate('creatorId', 'fullName email')
-      .populate('approverId', 'fullName email');
+      .populate('approverId', 'fullName email')
+      .lean();
     
     console.log('[DEBUG] Found headers:', headers.length);
     
@@ -981,7 +999,10 @@ router.get('/:quotationNumber', authenticateToken, authorize(['quotation_view'])
 router.put('/:quotationNumber', authenticateToken, authorize(['quotation_edit']), async (req, res) => {
   try {
     // Additional check: prevent viewer-only users from editing (unless they are the creator)
-    const user = await User.findById(req.user.userId).populate('permissions');
+    const user = await User.findById(req.user.userId)
+      .select('permissions')
+      .populate('permissions', 'name')
+      .lean();
     const userPermissions = user.permissions.map(p => p.name);
     const hasViewerPermission = userPermissions.includes('all_quotation_viewer');
     const hasEditPermission = userPermissions.includes('quotation_edit');
@@ -1020,7 +1041,10 @@ router.put('/:quotationNumber', authenticateToken, authorize(['quotation_edit'])
 router.delete('/:quotationNumber', authenticateToken, authorize(['quotation_delete']), async (req, res) => {
   try {
     // Additional check: prevent viewer-only users from deleting (unless they are the creator)
-    const user = await User.findById(req.user.userId).populate('permissions');
+    const user = await User.findById(req.user.userId)
+      .select('permissions')
+      .populate('permissions', 'name')
+      .lean();
     const userPermissions = user.permissions.map(p => p.name);
     const hasViewerPermission = userPermissions.includes('all_quotation_viewer');
     const hasDeletePermission = userPermissions.includes('quotation_delete');
@@ -1274,7 +1298,10 @@ router.post('/:quotationId/offers', authenticateToken, authorize(['quotation_edi
 router.put('/:quotationId/offers/:offerId', authenticateToken, authorize(['quotation_edit']), async (req, res) => {
   try {
     // Additional check: prevent viewer-only users from editing (unless they are the creator)
-    const user = await User.findById(req.user.userId).populate('permissions');
+    const user = await User.findById(req.user.userId)
+      .select('permissions')
+      .populate('permissions', 'name')
+      .lean();
     const userPermissions = user.permissions.map(p => p.name);
     const hasViewerPermission = userPermissions.includes('all_quotation_viewer');
     const hasEditPermission = userPermissions.includes('quotation_edit');
@@ -1965,7 +1992,10 @@ router.get('/:id/download', authenticateToken, authorize(['quotation_view']), as
     // Check if user is a requester
     const { hasPermission } = require('../utils/permissionHelper');
     const User = require('../models/user.model');
-    const user = await User.findById(userId).populate('permissions');
+    const user = await User.findById(userId)
+      .select('permissions')
+      .populate('permissions', 'name')
+      .lean();
     const isRequester = hasPermission(user, 'quotation_requester') || 
                        (header.requesterId && header.requesterId.toString() === userId.toString()) ||
                        (result.rfq && result.rfq.requesterId && result.rfq.requesterId.toString() === userId.toString());

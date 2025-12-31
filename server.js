@@ -77,9 +77,8 @@ if (process.env.NODE_ENV_BUILD === 'production') {
 const connectDB = async () => {
   try {
     await mongoose.connect(mongoURI, {
-      useNewUrlParser: true,
-      useUnifiedTopology: true,
-      dbName: 'app'
+      dbName: 'app',
+      autoIndex: process.env.NODE_ENV_BUILD !== 'production' // Only auto-index in dev
     });
     console.log('✅ Connected to MongoDB successfully');
     

@@ -700,7 +700,7 @@ const validateOfferCompleteness = async (offerId, expectedItemCount) => {
 
 // Get quotation header by ID
 const getQuotationHeaderById = async (headerId) => {
-  const header = await QuotationHeader.findById(headerId);
+  const header = await QuotationHeader.findById(headerId).lean();
   if (!header) {
     throw new Error('Quotation header not found');
   }
@@ -709,7 +709,9 @@ const getQuotationHeaderById = async (headerId) => {
 
 // Get quotation offer by ID
 const getQuotationOfferById = async (offerId) => {
-  const offer = await QuotationOffer.findById(offerId).populate('quotationHeaderId');
+  const offer = await QuotationOffer.findById(offerId)
+    .populate('quotationHeaderId', 'quotationNumber customerName status')
+    .lean();
   if (!offer) {
     throw new Error('Quotation offer not found');
   }
@@ -725,7 +727,7 @@ const getQuotationOffers = async (quotationIdentifier) => {
     throw new Error('Quotation identifier is required');
   }
   
-  // Helper function to populate header
+  // Helper function to populate header with optimized field selection
   const populateHeader = (query) => {
     return query
       .populate('requesterId', 'fullName email phoneNumbers')
@@ -737,15 +739,32 @@ const getQuotationOffers = async (quotationIdentifier) => {
       })
       .populate({
         path: 'rfqId',
+        select: 'rfqNumber customerName contactPerson customerContacts deliveryTerms deliveryNotes targetCloseDate paymentTerms inclusionNotes exclusionNotes isTaxIncluded includePPN lineOfBusiness',
         populate: [
           { path: 'requesterId', select: 'fullName email' },
           { path: 'approverId', select: 'fullName email' },
           { path: 'quotationCreatorId', select: 'fullName email' },
           { path: 'timeline.user', select: 'fullName email' },
-          { path: 'documents', populate: { path: 'uploadedBy', select: 'fullName email' } },
-          { path: 'items', populate: [{ path: 'drawingSpecification' }, { path: 'templateSourceId' }] }
+          { path: 'documents', select: 'originalName fileId fileCategory fileType uploadedBy createdAt', populate: { path: 'uploadedBy', select: 'fullName email' } },
+          { 
+            path: 'items', 
+            select: 'karoseri chassis chassisModel price priceNet quantity notes drawingSpecification templateSourceId specifications',
+            populate: [
+              { 
+                path: 'drawingSpecification', 
+                select: 'drawingNumber bodyTypeId chassisTypeId sizeTypeId',
+                populate: [
+                  { path: 'bodyTypeId', select: 'name shortName' },
+                  { path: 'chassisTypeId', select: 'name shortName' },
+                  { path: 'sizeTypeId', select: 'name shortName' }
+                ]
+              }, 
+              { path: 'templateSourceId', select: 'name shortName' }
+            ]
+          }
         ]
-      });
+      })
+      .lean(); // Use lean() to return plain objects instead of Mongoose documents
   };
   
   // Check if it's a valid ObjectId (24 hex characters)
@@ -786,24 +805,28 @@ const getQuotationOffers = async (quotationIdentifier) => {
   }
 
   const offers = await QuotationOffer.find({ quotationHeaderId: header._id })
-    .populate('quotationHeaderId')
-    .populate('parentQuotationId')
+    .select('offerNumber offerNumberInQuotation totalPrice totalNetto totalDiscount excludePPN isFullyAccepted isPartiallyAccepted acceptedItemsCount totalItemsCount revision parentQuotationId notes notesImages downloadApproval createdAt updatedAt')
+    .populate('parentQuotationId', 'offerNumber offerNumberInQuotation')
     .populate({
       path: 'notesImages',
-      model: 'NotesImage'
+      model: 'NotesImage',
+      select: '_id imageFile createdBy createdAt'
     })
     .populate('downloadApproval.engineerApproval.approvedBy', 'fullName email')
     .populate('downloadApproval.managementApproval.approvedBy', 'fullName email')
-    .sort({ offerNumberInQuotation: 1, revision: 1 }); // Sort by offer number, then revision
+    .sort({ offerNumberInQuotation: 1, revision: 1 })
+    .lean(); // Use lean() to return plain objects instead of Mongoose documents
 
 
   // Get offer items for all offers
   const offerIds = offers.map(offer => offer._id);
   
   const offerItems = await OfferItem.find({ quotationOfferId: { $in: offerIds } })
+    .select('quotationOfferId itemNumber karoseri chassis chassisModel price netto discountType discountValue quantity notes drawingSpecification bodyTypeId chassisTypeId sizeTypeId templateSourceId templateMode templateSourceModel specifications serviceName serviceDetails sparepartName pricePerUnit')
     .populate({
       path: 'drawingSpecification',
       model: 'DrawingSpecification',
+      select: 'drawingNumber bodyTypeId chassisTypeId sizeTypeId',
       populate: [
         {
           path: 'bodyTypeId',
@@ -826,8 +849,9 @@ const getQuotationOffers = async (quotationIdentifier) => {
     .populate('bodyTypeId', 'name shortName')
     .populate('chassisTypeId', 'name shortName')
     .populate('sizeTypeId', 'name shortName')
-    .populate('templateSourceId') // Populate dynamic template source (BodyType or DrawingSpecification)
-    .sort({ quotationOfferId: 1, itemNumber: 1 });
+    .populate('templateSourceId', 'name shortName') // Populate dynamic template source (BodyType or DrawingSpecification)
+    .sort({ quotationOfferId: 1, itemNumber: 1 })
+    .lean(); // Use lean() to return plain objects instead of Mongoose documents
 
 
   // Group offer items by offer ID
@@ -840,14 +864,13 @@ const getQuotationOffers = async (quotationIdentifier) => {
     itemsByOffer[offerId].push(item);
   });
 
-  // Add offer items to offers and convert to plain objects
+  // Add offer items to offers (offers are already plain objects from .lean())
   const offersWithItems = offers.map(offer => {
     const offerId = offer._id.toString();
-    const offerObj = offer.toObject();
-    offerObj.offerItems = itemsByOffer[offerId] || [];
-    
-    
-    return offerObj;
+    return {
+      ...offer,
+      offerItems: itemsByOffer[offerId] || []
+    };
   });
 
   // Group offers by offerNumberInQuotation
@@ -898,7 +921,8 @@ const getQuotationOffers = async (quotationIdentifier) => {
   });
 
 
-  const headerObj = header.toObject();
+  // Header is already a plain object from .lean(), no need for toObject()
+  const headerObj = { ...header };
   const rfqSnapshot = headerObj.rfqId || null;
   delete headerObj.rfqId;
 
@@ -1108,13 +1132,15 @@ const getQuotations = async (filters = {}, pagination = { page: 1, limit: 10 }, 
       .limit(limit)
       .lean(); // Use lean() for faster queries without Mongoose document overhead
   } else {
-    // Full mode: populate user data
+    // Full mode: populate user data with optimized field selection
     headers = await QuotationHeader.find(headerQuery)
+      .select('quotationNumber requesterId approverId creatorId marketingName rfqId customerName contactPerson lineOfBusiness status winSubStatus ocSequenceNumber ocNumber spkSequenceNumber spkCode spkNumber selectedOfferId selectedOfferItemIds lastFollowUpDate progress downloads createdAt updatedAt')
       .populate('requesterId', 'fullName email')
       .populate('approverId', 'fullName email')
       .populate('creatorId', 'fullName email')
       .populate({
         path: 'rfqId',
+        select: 'rfqNumber customerName contactPerson requesterId approverId quotationCreatorId',
         populate: [
           { path: 'requesterId', select: 'fullName email' },
           { path: 'approverId', select: 'fullName email' },
@@ -1123,7 +1149,8 @@ const getQuotations = async (filters = {}, pagination = { page: 1, limit: 10 }, 
       })
       .sort({ createdAt: -1 })
       .skip(skip)
-      .limit(limit);
+      .limit(limit)
+      .lean(); // Use lean() to return plain objects instead of Mongoose documents
   }
 
   // Get total count
@@ -1137,18 +1164,17 @@ const getQuotations = async (filters = {}, pagination = { page: 1, limit: 10 }, 
       if (lightweight) {
         // In lightweight mode, header is already a plain object from lean()
         // Only include minimal fields
-        const headerObj = header.toObject ? header.toObject() : header;
         quotations.push({
           header: {
-            _id: headerObj._id,
-            quotationNumber: headerObj.quotationNumber,
-            createdAt: headerObj.createdAt,
-            updatedAt: headerObj.updatedAt,
-            requesterId: headerObj.requesterId, // Just the ID, no population
-            approverId: headerObj.approverId, // Just the ID, no population
-            creatorId: headerObj.creatorId, // Just the ID, no population
-            status: headerObj.status,
-            lastFollowUpDate: headerObj.lastFollowUpDate,
+            _id: header._id,
+            quotationNumber: header.quotationNumber,
+            createdAt: header.createdAt,
+            updatedAt: header.updatedAt,
+            requesterId: header.requesterId, // Just the ID, no population
+            approverId: header.approverId, // Just the ID, no population
+            creatorId: header.creatorId, // Just the ID, no population
+            status: header.status,
+            lastFollowUpDate: header.lastFollowUpDate,
             // Skip followUpStatus calculation to avoid aggregation overhead
             // Skip other fields like customerName, marketingName, etc. to keep it minimal
           },
@@ -1158,7 +1184,9 @@ const getQuotations = async (filters = {}, pagination = { page: 1, limit: 10 }, 
       }
       
       // Use the grouped structure from getQuotationOffers
-      const { header: mappedHeader, rfq, offers: offersGrouped } = await getQuotationOffers(header.quotationNumber);
+      // Header is already a plain object, so we need to get quotationNumber from it
+      const quotationNumber = header.quotationNumber || header._id.toString();
+      const { header: mappedHeader, rfq, offers: offersGrouped } = await getQuotationOffers(quotationNumber);
       let groupedOffers = offersGrouped;
 
     // If filtering by search term, filter offers
@@ -1206,11 +1234,13 @@ const getQuotations = async (filters = {}, pagination = { page: 1, limit: 10 }, 
         offers: groupedOffers
       });
     } catch (error) {
-      console.error(`Error getting offers for quotation ${header.quotationNumber}:`, error);
+      const quotationNumber = header.quotationNumber || header._id?.toString() || 'unknown';
+      console.error(`Error getting offers for quotation ${quotationNumber}:`, error);
       // Fallback to empty offers if there's an error
+      // Header is already a plain object from lean(), no need for toObject()
       quotations.push({
         header: {
-          ...header.toObject(),
+          ...header,
           followUpStatus: getFollowUpStatus(header.lastFollowUpDate)
         },
         rfq: header.rfqId || null,

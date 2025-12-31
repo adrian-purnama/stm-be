@@ -10,8 +10,7 @@ const permissionCategorySchema = new mongoose.Schema({
     required: true,
     unique: true,
     trim: true,
-    lowercase: true,
-    index: true
+    lowercase: true
   },
   isActive: {
     type: Boolean,

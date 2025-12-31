@@ -79,10 +79,11 @@ const createRFQ = async (rfqData) => {
 const getRFQById = async (rfqId) => {
   try {
     const rfq = await RFQ.findById(rfqId)
+      .select('rfqNumber requesterId approverId quotationCreatorId quotationId customerName contactPerson customerContacts deliveryTerms deliveryNotes targetCloseDate paymentTerms inclusionNotes exclusionNotes isTaxIncluded includePPN lineOfBusiness priority status description bodyTypeId chassisTypeId engineeringTransit timeline documents items createdAt updatedAt')
       .populate('requesterId', 'email fullName')
       .populate('approverId', 'email fullName')
       .populate('quotationCreatorId', 'email fullName')
-      .populate('quotationId')
+      .populate('quotationId', 'quotationNumber status')
       .populate('bodyTypeId', 'name shortName')
       .populate('chassisTypeId', 'name shortName')
       .populate('engineeringTransit.assignedTo', 'email fullName')
@@ -90,6 +91,7 @@ const getRFQById = async (rfqId) => {
       .populate('timeline.user', 'email fullName')
       .populate({
         path: 'documents',
+        select: 'originalName fileId fileCategory fileType uploadedBy createdAt',
         populate: {
           path: 'uploadedBy',
           select: 'fullName email'
@@ -97,11 +99,22 @@ const getRFQById = async (rfqId) => {
       })
       .populate({
         path: 'items',
+        select: 'karoseri chassis chassisModel price priceNet quantity notes drawingSpecification templateSourceId specifications',
         populate: [
-          { path: 'drawingSpecification', model: 'DrawingSpecification' },
-          { path: 'templateSourceId' }
+          { 
+            path: 'drawingSpecification', 
+            model: 'DrawingSpecification',
+            select: 'drawingNumber bodyTypeId chassisTypeId sizeTypeId',
+            populate: [
+              { path: 'bodyTypeId', select: 'name shortName' },
+              { path: 'chassisTypeId', select: 'name shortName' },
+              { path: 'sizeTypeId', select: 'name shortName' }
+            ]
+          },
+          { path: 'templateSourceId', select: 'name shortName' }
         ]
-      });
+      })
+      .lean();
     
     if (!rfq) {
       throw new Error('RFQ not found');
@@ -120,16 +133,18 @@ const getRFQs = async (filters = {}, options = {}) => {
     const skip = (page - 1) * limit;
     
     const query = RFQ.find(filters)
+      .select('rfqNumber requesterId approverId quotationCreatorId quotationId customerName contactPerson status priority lineOfBusiness bodyTypeId chassisTypeId engineeringTransit createdAt updatedAt')
       .populate('requesterId', 'email fullName')
       .populate('approverId', 'email fullName')
       .populate('quotationCreatorId', 'email fullName')
-      .populate('quotationId')
+      .populate('quotationId', 'quotationNumber status')
       .populate('bodyTypeId', 'name shortName')
       .populate('chassisTypeId', 'name shortName')
       .populate('engineeringTransit.assignedTo', 'email fullName')
       .populate('engineeringTransit.reviewedBy', 'email fullName')
       .populate({
         path: 'documents',
+        select: 'originalName fileId fileCategory fileType uploadedBy createdAt',
         populate: {
           path: 'uploadedBy',
           select: 'fullName email'
@@ -137,14 +152,20 @@ const getRFQs = async (filters = {}, options = {}) => {
       })
       .populate({
         path: 'items',
+        select: 'karoseri chassis chassisModel price priceNet quantity notes drawingSpecification templateSourceId',
         populate: [
-          { path: 'drawingSpecification', model: 'DrawingSpecification' },
-          { path: 'templateSourceId' }
+          { 
+            path: 'drawingSpecification', 
+            model: 'DrawingSpecification',
+            select: 'drawingNumber bodyTypeId chassisTypeId sizeTypeId'
+          },
+          { path: 'templateSourceId', select: 'name shortName' }
         ]
       })
       .sort({ createdAt: -1 })
       .skip(skip)
-      .limit(parseInt(limit));
+      .limit(parseInt(limit))
+      .lean();
     
     const [rfqs, total] = await Promise.all([
       query.exec(),
