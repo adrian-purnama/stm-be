@@ -6,6 +6,8 @@ const rfqDocumentsGridFS = getRfqDocumentsGridFS();
 
 // Generate RFQ number
 const generateRFQNumber = async () => {
+  console.log('[generateRFQNumber] Starting RFQ number generation');
+  const memStart = process.memoryUsage();
   const now = new Date();
   const year = now.getFullYear();
   const month = now.getMonth() + 1; 
@@ -17,16 +19,25 @@ const generateRFQNumber = async () => {
   };
   const romanMonth = romanMonths[month];
   
-  // Find all RFQs for this month and year
+  // Find all RFQs for this month and year - OPTIMIZED: use lean() and only select rfqNumber
   const startOfMonth = new Date(year, month - 1, 1);
   const endOfMonth = new Date(year, month, 0);
   
+  console.log('[generateRFQNumber] Querying RFQs for month:', { startOfMonth, endOfMonth });
   const rfqs = await RFQ.find({
     createdAt: {
       $gte: startOfMonth,
       $lte: endOfMonth
     }
-  }, { rfqNumber: 1 });
+  })
+  .select('rfqNumber')
+  .lean(); // CRITICAL: Use lean() to return plain objects instead of Mongoose documents
+
+  const memAfterQuery = process.memoryUsage();
+  console.log('[generateRFQNumber] RFQs fetched:', {
+    count: rfqs.length,
+    memoryDelta: `${((memAfterQuery.heapUsed - memStart.heapUsed) / 1024 / 1024).toFixed(2)} MB`
+  });
 
   // Extract the highest number from existing RFQ numbers for this month
   let highestNumber = 0;
@@ -47,12 +58,22 @@ const generateRFQNumber = async () => {
   const nextNumber = highestNumber + 1;
   const rfqNumber = `${nextNumber}/RFQ/STM/${romanMonth}/${year}`;
   
+  console.log('[generateRFQNumber] Generated number:', rfqNumber);
+  
   // Double-check that this number doesn't already exist (race condition protection)
-  const existingRFQ = await RFQ.findOne({ rfqNumber });
+  // OPTIMIZED: Use lean() and only check existence
+  const existingRFQ = await RFQ.findOne({ rfqNumber }).select('_id').lean();
   if (existingRFQ) {
+    console.log('[generateRFQNumber] Number exists, recursing...');
     // If it exists, recursively call to get the next number
     return await generateRFQNumber();
   }
+  
+  const memEnd = process.memoryUsage();
+  console.log('[generateRFQNumber] RFQ number generation complete:', {
+    rfqNumber,
+    totalMemoryDelta: `${((memEnd.heapUsed - memStart.heapUsed) / 1024 / 1024).toFixed(2)} MB`
+  });
   
   return rfqNumber;
 };
@@ -60,17 +81,43 @@ const generateRFQNumber = async () => {
 // Create RFQ
 const createRFQ = async (rfqData) => {
   try {
-    const rfqNumber = await generateRFQNumber();
+    console.log('[createRFQ] Starting RFQ creation');
+    const memStart = process.memoryUsage();
     
+    console.log('[createRFQ] Step 1: Generating RFQ number');
+    const rfqNumber = await generateRFQNumber();
+    console.log('[createRFQ] Step 1: RFQ number generated:', rfqNumber);
+    
+    console.log('[createRFQ] Step 2: Creating RFQ document instance');
+    const memBeforeNew = process.memoryUsage();
     const rfq = new RFQ({
       ...rfqData,
       rfqNumber,
       submittedAt: new Date()
     });
+    const memAfterNew = process.memoryUsage();
+    console.log('[createRFQ] Step 2: RFQ document created', {
+      memoryDelta: `${((memAfterNew.heapUsed - memBeforeNew.heapUsed) / 1024 / 1024).toFixed(2)} MB`
+    });
     
+    console.log('[createRFQ] Step 3: Saving RFQ to database');
+    const memBeforeSave = process.memoryUsage();
     await rfq.save();
+    const memAfterSave = process.memoryUsage();
+    console.log('[createRFQ] Step 3: RFQ saved successfully', {
+      rfqId: rfq._id,
+      rfqNumber: rfq.rfqNumber,
+      memoryDelta: `${((memAfterSave.heapUsed - memBeforeSave.heapUsed) / 1024 / 1024).toFixed(2)} MB`
+    });
+    
+    const memEnd = process.memoryUsage();
+    console.log('[createRFQ] RFQ creation complete:', {
+      totalMemoryDelta: `${((memEnd.heapUsed - memStart.heapUsed) / 1024 / 1024).toFixed(2)} MB`
+    });
+    
     return rfq;
   } catch (error) {
+    console.error('[createRFQ] Error creating RFQ:', error);
     throw new Error(`Failed to create RFQ: ${error.message}`);
   }
 };
