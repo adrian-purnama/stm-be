@@ -1316,7 +1316,7 @@ router.put('/:quotationId/offers/:offerId', authenticateToken, authorize(['quota
       return sendErrorResponse(res, 404, 'Quotation not found');
     }
 
-    // Check if offer is approved - if so, prevent editing
+    // Check if offer is approved - if so, only allow notes and notesImages updates
     const offer = await QuotationOffer.findById(offerId);
     if (!offer) {
       return sendErrorResponse(res, 404, 'Offer not found');
@@ -1325,11 +1325,28 @@ router.put('/:quotationId/offers/:offerId', authenticateToken, authorize(['quota
     const isDownloadApproved = offer.downloadApproval?.engineerApproval?.status === 'approved' &&
                                 offer.downloadApproval?.managementApproval?.status === 'approved';
     
+    let finalUpdateData = updateData;
+    
     if (isDownloadApproved) {
-      return sendErrorResponse(res, 403, 'Cannot edit an approved offer. Please create a revision instead.');
+      // Only allow notes and notesImages updates for approved offers
+      const allowedFields = ['notes', 'notesImages'];
+      
+      // Check if there are any fields other than notes/notesImages being updated
+      const disallowedFields = Object.keys(updateData).filter(key => !allowedFields.includes(key));
+      if (disallowedFields.length > 0) {
+        return sendErrorResponse(res, 403, `Cannot edit approved offer fields: ${disallowedFields.join(', ')}. Only notes and notes images can be updated for approved offers.`);
+      }
+      
+      // Filter updateData to only include allowed fields
+      finalUpdateData = {};
+      for (const field of allowedFields) {
+        if (updateData.hasOwnProperty(field)) {
+          finalUpdateData[field] = updateData[field];
+        }
+      }
     }
 
-    const updatedOffer = await updateQuotationOffer(offerId, updateData);
+    const updatedOffer = await updateQuotationOffer(offerId, finalUpdateData);
 
     return sendSuccessResponse(res, 200, 'Offer updated successfully', updatedOffer);
   } catch (error) {
