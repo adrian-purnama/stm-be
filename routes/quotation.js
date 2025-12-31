@@ -1128,19 +1128,23 @@ router.patch('/:quotationNumber/status', authenticateToken, authorize(['quotatio
       const fallbackRoman = ROMAN_MONTHS[now.getMonth()];
       const fallbackYear = now.getFullYear();
 
-      // Handle OC number generation
+      // Handle OC number generation (support range format: "10 - 100" or "10")
       const ocSequence = (ocSequenceNumber ?? '').toString().trim();
       if (ocSequence) {
         const ocMonth = isValidRomanMonth(ocMonthRoman) ? ocMonthRoman.toUpperCase() : fallbackRoman;
         const ocYearValue = Number.isFinite(Number(ocYear)) ? Number(ocYear) : fallbackYear;
+        
+        // Store the sequence as-is (could be "10" or "10 - 100")
         updateData.ocSequenceNumber = ocSequence;
+        
+        // Generate ocNumber with range format if applicable
         updateData.ocNumber = `${ocSequence}/${ocMonth}/${ocYearValue}`;
       } else {
         updateData.ocSequenceNumber = '';
         updateData.ocNumber = '';
       }
 
-      // Handle SPK number generation
+      // Handle SPK number generation (support range format: "10 - 100" or "10")
       const spkSequence = (spkSequenceNumber ?? '').toString().trim();
       const spkCodeNormalized = (spkLetterCode ?? '').toString().trim().toUpperCase();
       if (spkSequence) {
@@ -1149,9 +1153,14 @@ router.patch('/:quotationNumber/status', authenticateToken, authorize(['quotatio
         }
         const spkMonth = isValidRomanMonth(spkMonthRoman) ? spkMonthRoman.toUpperCase() : fallbackRoman;
         const spkYearValue = Number.isFinite(Number(spkYear)) ? Number(spkYear) : fallbackYear;
+        
+        // Store the sequence as-is (could be "10" or "10 - 100")
         updateData.spkSequenceNumber = spkSequence;
         updateData.spkCode = spkCodeNormalized;
-        updateData.spkNumber = `${spkSequence}/${spkCodeNormalized}/${spkMonth}/${spkYearValue}`;
+        
+        // Generate spkNumber with range format if applicable
+        const displayCode = spkCodeNormalized === '-' ? '' : spkCodeNormalized;
+        updateData.spkNumber = `${spkSequence}/${displayCode}/${spkMonth}/${spkYearValue}`;
       } else {
         updateData.spkSequenceNumber = '';
         updateData.spkCode = '';
