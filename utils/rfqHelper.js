@@ -97,45 +97,49 @@ const generateRFQNumber = async (retryCount = 0, maxRetries = 10) => {
     memoryDelta: `${((memAfterQuery.heapUsed - memStart.heapUsed) / 1024 / 1024).toFixed(2)} MB`
   });
 
-  const nextNumber = highestNumber + 1;
-  const rfqNumber = `${nextNumber}/RFQ/STM/${romanMonth}/${year}`;
-  
-  console.log('[generateRFQNumber] Generated candidate number:', rfqNumber);
-  
-  // Double-check that this number doesn't already exist (race condition protection)
-  console.log('[generateRFQNumber] Checking if number exists in database...');
+  // Start from highestNumber + 1 and keep incrementing until we find an available number
+  let candidateNumber = highestNumber + 1;
+  let rfqNumber;
   let existingRFQ;
-  try {
-    existingRFQ = await RFQ.findOne({ rfqNumber }).select('_id rfqNumber createdAt').lean();
-    console.log('[generateRFQNumber] Existence check result:', existingRFQ ? {
-      exists: true,
-      id: existingRFQ._id,
-      rfqNumber: existingRFQ.rfqNumber,
-      createdAt: existingRFQ.createdAt
-    } : { exists: false });
-  } catch (checkError) {
-    console.error('[generateRFQNumber] Error checking existence:', checkError);
-    throw checkError;
+  
+  console.log('[generateRFQNumber] Starting from candidate number:', candidateNumber);
+  
+  // Try numbers sequentially until we find one that doesn't exist
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    rfqNumber = `${candidateNumber}/RFQ/STM/${romanMonth}/${year}`;
+    
+    console.log(`[generateRFQNumber] Attempt ${attempt + 1}/${maxRetries}: Checking number ${rfqNumber}...`);
+    
+    // Check if this number exists
+    try {
+      existingRFQ = await RFQ.findOne({ rfqNumber }).select('_id rfqNumber createdAt').lean();
+      
+      if (!existingRFQ) {
+        // Number is available!
+        console.log(`[generateRFQNumber] ✅ Number ${rfqNumber} is available!`);
+        break;
+      }
+      
+      console.log(`[generateRFQNumber] ⚠️  Number ${rfqNumber} exists:`, {
+        id: existingRFQ._id,
+        createdAt: existingRFQ.createdAt,
+        isInDateRange: existingRFQ.createdAt >= startOfMonth && existingRFQ.createdAt <= endOfMonth
+      });
+      
+      // Number exists, try next one
+      candidateNumber++;
+      console.log(`[generateRFQNumber] 🔄 Trying next number: ${candidateNumber}`);
+      
+    } catch (checkError) {
+      console.error('[generateRFQNumber] Error checking existence:', checkError);
+      throw checkError;
+    }
   }
   
+  // Check if we exhausted all retries
   if (existingRFQ) {
-    console.log('[generateRFQNumber] ⚠️  NUMBER EXISTS! Details:', {
-      existingId: existingRFQ._id,
-      existingNumber: existingRFQ.rfqNumber,
-      existingCreatedAt: existingRFQ.createdAt,
-      isInDateRange: existingRFQ.createdAt >= startOfMonth && existingRFQ.createdAt <= endOfMonth,
-      retryCount: retryCount + 1,
-      willRetry: retryCount + 1 < maxRetries
-    });
-    
-    if (retryCount + 1 >= maxRetries) {
-      console.error('[generateRFQNumber] ❌ MAX RETRIES REACHED - STOPPING RECURSION');
-      throw new Error(`Failed to generate unique RFQ number after ${maxRetries} retries. Number ${rfqNumber} already exists.`);
-    }
-    
-    console.log('[generateRFQNumber] 🔄 Recursing to try next number...');
-    // If it exists, try the next number (increment and retry)
-    return await generateRFQNumber(retryCount + 1, maxRetries);
+    console.error('[generateRFQNumber] ❌ MAX RETRIES REACHED - Could not find available number');
+    throw new Error(`Failed to generate unique RFQ number after ${maxRetries} attempts. Last checked: ${rfqNumber}`);
   }
   
   const memEnd = process.memoryUsage();
