@@ -221,7 +221,7 @@ const getRFQById = async (rfqId) => {
       })
       .populate({
         path: 'items',
-        select: 'karoseri chassis chassisModel price priceNet quantity notes drawingSpecification templateSourceId specifications',
+        select: 'karoseri chassis chassisModel estimatedRevenue pricePerUnit quantity notes drawingSpecification templateSourceId templateMode templateSourceModel specifications serviceName serviceDetails sparepartName',
         populate: [
           { 
             path: 'drawingSpecification', 

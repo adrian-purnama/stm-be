@@ -947,7 +947,7 @@ router.get('/pending-approval', authenticateToken, authorize(['engineer_download
       const headerIdStr = headerId ? headerId.toString() : null;
       const header = headerIdStr ? headerMap.get(headerIdStr) : null;
       return {
-        ...offer.toObject(),
+        ...offer,
         header: header || offer.quotationHeaderId || null
       };
     }).filter(offer => offer.header !== null); // Filter out offers without headers
