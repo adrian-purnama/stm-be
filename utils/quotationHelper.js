@@ -826,7 +826,7 @@ const getQuotationOffers = async (quotationIdentifier) => {
     .populate({
       path: 'drawingSpecification',
       model: 'DrawingSpecification',
-      select: 'drawingNumber bodyTypeId chassisTypeId sizeTypeId',
+      select: 'drawingNumber bodyTypeId chassisTypeId sizeTypeId quotationImage',
       populate: [
         {
           path: 'bodyTypeId',

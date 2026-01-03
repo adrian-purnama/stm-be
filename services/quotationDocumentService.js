@@ -2767,54 +2767,11 @@ const createDOCXFromScratch = async (templateData, tableMap = {}, imageData = []
     console.log(`[DOCX Creation] Successfully processed ${processedTemplateData.images.length} drawing image(s) into XML format`);
   }
   
-  // Process notes images
-  if (processedTemplateData.notes_images && processedTemplateData.notes_images.length > 0) {
-    processedTemplateData.notes_images = processedTemplateData.notes_images.map((img, idx) => {
-      if (img.imageTag) {
-        try {
-          // Extract base64 data (handle both data URI and pure base64)
-          let base64Data = img.imageTag;
-          if (base64Data.includes(',')) {
-            base64Data = base64Data.split(',')[1];
-          }
-          
-          // Validate base64
-          if (!base64Data || base64Data.trim().length === 0) {
-            console.error('Empty base64 data for notes image');
-            return img;
-          }
-          
-          const imageBuffer = Buffer.from(base64Data, 'base64');
-          
-          // Validate buffer was created successfully
-          if (!imageBuffer || imageBuffer.length === 0) {
-            console.error('Failed to create buffer from base64 data');
-            return img;
-          }
-          
-          const imagePath = `word/media/image${relationshipIdCounter}.jpg`;
-          const relationshipId = `rId${relationshipIdCounter}`;
-          
-          zip.file(imagePath, imageBuffer);
-          imageRelationships.push(`<Relationship Id="${relationshipId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image${relationshipIdCounter}.jpg"/>`);
-          
-          // Notes images: 4 x 6 inches (fits within A4 page with margins)
-          // 1 inch = 914400 EMU, so 4 inches = 3,657,600 EMU, 6 inches = 5,486,400 EMU
-          const width = 4 * 914400; // 3,657,600 EMU
-          const height = 6 * 914400; // 5,486,400 EMU
-          const imageXML = createImageXML(relationshipId, width, height, docPrIdCounter, picIdCounter);
-          
-          relationshipIdCounter++;
-          docPrIdCounter++;
-          picIdCounter++;
-          return { ...img, imageTag: imageXML };
-        } catch (err) {
-          console.error('Error processing notes image:', err.message);
-          return img;
-        }
-      }
-      return img;
-    });
+  // Notes images are NOT processed - only drawing spec images are included in the document
+  // Skip processing notes images entirely
+  if (processedTemplateData.notes_images) {
+    processedTemplateData.notes_images = [];
+    processedTemplateData.has_notes_images = false;
   }
   
   // Load header/footer images only if includeHeaderFooter is true
@@ -3209,27 +3166,9 @@ const generateQuotationDocument = async (quotationData, offerId = null, selected
       }
     }
 
-    // Collect notes images data - exclude if user is requester
+    // Notes images are NOT included in the quotation document
+    // Only drawing spec images are included when a drawing spec is selected
     const notesImagesData = [];
-    if (!isRequester && activeOffer.notesImages && activeOffer.notesImages.length > 0) {
-      for (const notesImage of activeOffer.notesImages) {
-        try {
-          const imageFile = notesImage.imageFile || notesImage;
-          const fileId = imageFile.fileId;
-          const imageId = notesImage._id || notesImage;
-          
-          if (fileId) {
-            const base64String = await fetchNotesImageAsBase64(imageId, fileId, true);
-            notesImagesData.push({
-              imageTag: base64String,
-              filename: imageFile.originalName || 'Notes Image'
-            });
-          }
-        } catch (err) {
-          console.error(`Failed to load notes image ${notesImage._id}:`, err.message);
-        }
-      }
-    }
     
     // Exclude offer notes if user is requester
     const offerForTemplate = isRequester 
