@@ -911,8 +911,8 @@ router.get('/pending-approval', authenticateToken, authorize(['engineer_download
     console.log('[DEBUG] Approval query:', JSON.stringify(approvalQuery));
     
     const offers = await QuotationOffer.find(approvalQuery)
-      .select('quotationHeaderId downloadApproval offerNumber offerNumberInQuotation createdAt')
-      .populate('quotationHeaderId', 'quotationNumber customerName status')
+      .select('quotationHeaderId downloadApproval offerNumber offerNumberInQuotation totalNetto createdAt')
+      .populate('quotationHeaderId', 'quotationNumber status')
       .populate('downloadApproval.engineerApproval.approvedBy', 'fullName email')
       .populate('downloadApproval.managementApproval.approvedBy', 'fullName email')
       .sort({ createdAt: -1 })
@@ -929,17 +929,30 @@ router.get('/pending-approval', authenticateToken, authorize(['engineer_download
     console.log('[DEBUG] Header IDs:', headerIds.length);
     
     // Get quotation headers by _id with optimized field selection
+    // Populate rfqId to get customerName from RFQ
     const headers = await QuotationHeader.find({ _id: { $in: headerIds } })
-      .select('quotationNumber requesterId approverId creatorId customerName status createdAt')
+      .select('quotationNumber requesterId approverId creatorId rfqId status createdAt')
       .populate('requesterId', 'fullName email')
       .populate('creatorId', 'fullName email')
       .populate('approverId', 'fullName email')
+      .populate({
+        path: 'rfqId',
+        select: 'customerName'
+      })
       .lean();
     
     console.log('[DEBUG] Found headers:', headers.length);
     
     const headerMap = new Map();
-    headers.forEach(h => headerMap.set(h._id.toString(), h));
+    headers.forEach(h => {
+      const headerObj = { ...h };
+      const rfqSnapshot = headerObj.rfqId || null;
+      // Extract customerName from RFQ if available
+      if (rfqSnapshot && rfqSnapshot.customerName) {
+        headerObj.customerName = rfqSnapshot.customerName;
+      }
+      headerMap.set(h._id.toString(), headerObj);
+    });
     
     // Enrich offers with header data
     const enrichedOffers = offers.map(offer => {

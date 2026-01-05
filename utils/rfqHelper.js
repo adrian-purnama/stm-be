@@ -201,7 +201,7 @@ const createRFQ = async (rfqData) => {
 const getRFQById = async (rfqId) => {
   try {
     const rfq = await RFQ.findById(rfqId)
-      .select('rfqNumber requesterId approverId quotationCreatorId quotationId customerName contactPerson customerContacts deliveryTerms deliveryNotes targetCloseDate paymentTerms inclusionNotes exclusionNotes isTaxIncluded includePPN lineOfBusiness priority status description bodyTypeId chassisTypeId engineeringTransit timeline documents items createdAt updatedAt')
+      .select('rfqNumber requesterId approverId quotationCreatorId quotationId engineeringId customerName contactPerson customerContacts deliveryTerms deliveryNotes targetCloseDate paymentTerms inclusionNotes exclusionNotes isTaxIncluded includePPN lineOfBusiness priority status description bodyTypeId chassisTypeId engineeringTransit timeline documents items createdAt updatedAt canMake projectOngoing competitor deliveryLocation confidenceRate endUser expectedDeliveryDate')
       .populate('requesterId', 'email fullName')
       .populate('approverId', 'email fullName')
       .populate('quotationCreatorId', 'email fullName')
