@@ -49,3 +49,4 @@ sessionSchema.index({ expiresAt: 1, isActive: 1 }); // Compound index for common
 module.exports = mongoose.model('Session', sessionSchema);
 
 
+

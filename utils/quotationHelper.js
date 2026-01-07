@@ -826,7 +826,9 @@ const getQuotationOffers = async (quotationIdentifier) => {
     .populate({
       path: 'drawingSpecification',
       model: 'DrawingSpecification',
-      select: 'drawingNumber bodyTypeId chassisTypeId sizeTypeId quotationImage',
+      // Note: drawingNumber is a virtual field, so we need to select the actual fields used to compute it
+      // Remove 'drawingNumber' from select since it won't work with .lean(), and add fields needed for computation
+      select: 'bodyTypeId chassisTypeId sizeTypeId chassisModel dimension features quotationImage',
       populate: [
         {
           path: 'bodyTypeId',

@@ -19,6 +19,70 @@ const escapeXml = (unsafe) => {
     .replace(/'/g, '&apos;');
 };
 
+// Normalize key segment for drawing number (same logic as model)
+const normalizeKeySegment = (str) => {
+  if (!str) return '';
+  return String(str)
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, '')
+    .replace(/\//g, '')
+    .replace(/-/g, '');
+};
+
+// Format features for drawing number (same logic as model)
+const formatFeatures = (features) => {
+  if (!features || features.length === 0) return '';
+  
+  return features
+    .map(feature => {
+      if (!feature.featureId) return null;
+      // Get feature shortName if populated, otherwise use featureId
+      const featureKey = feature.featureId.shortName || feature.featureId.name || feature.featureId.toString();
+      const specValue = feature.spec ? normalizeKeySegment(feature.spec) : '';
+      return specValue ? `${normalizeKeySegment(featureKey)}_${specValue}` : normalizeKeySegment(featureKey);
+    })
+    .filter(Boolean)
+    .join('-');
+};
+
+// Compute drawing number from populated drawing specification object
+// This is needed because virtual fields don't work with .lean() queries
+const computeDrawingNumber = (drawing) => {
+  if (!drawing) return null;
+  
+  try {
+    // Get body type shortName
+    const bodyTypeKey = drawing.bodyTypeId?.shortName || drawing.bodyTypeId?.name || drawing.bodyTypeId?.toString() || '';
+    
+    // Get chassis type shortName
+    const chassisKey = drawing.chassisTypeId?.shortName || drawing.chassisTypeId?.name || drawing.chassisTypeId?.toString() || '';
+    
+    // Get size type shortName
+    const sizeKey = drawing.sizeTypeId?.shortName || drawing.sizeTypeId?.name || drawing.sizeTypeId?.toString() || '';
+    
+    // Normalize other fields
+    const chassisModelKey = normalizeKeySegment(drawing.chassisModel || '');
+    const dimensionKey = normalizeKeySegment(drawing.dimension || '');
+    const featuresKey = formatFeatures(drawing.features || []);
+    
+    // Build composite key: BODYTYPE/CHASSIS/CHASSISMODEL/SIZE/DIMENSION/FEATURES
+    const keyParts = [
+      normalizeKeySegment(bodyTypeKey) || '-',
+      chassisKey ? normalizeKeySegment(chassisKey) : '-',
+      chassisModelKey || '-',
+      sizeKey ? normalizeKeySegment(sizeKey) : '-',
+      dimensionKey || '-',
+      featuresKey || '-'
+    ];
+    
+    return keyParts.join('/');
+  } catch (error) {
+    console.error('Error computing drawing number:', error);
+    return null;
+  }
+};
+
 /**
  * Sanitize paragraph attributes by removing Word-generated volatile unique IDs
  * These IDs can cause corruption when documents are regenerated or tables are inserted
@@ -940,19 +1004,28 @@ const buildItemText = (offerItems, lineOfBusinessType = 'karoseri', drawingNumbe
       let drawingInfo = null;
       if (item.drawingSpecification) {
         // Check if drawingSpecification is populated (object) or just an ObjectId
-        let drawingNumber = 'Selected';
+        let drawingNumber = null;
         const drawingId = typeof item.drawingSpecification === 'object' && item.drawingSpecification !== null
           ? item.drawingSpecification._id?.toString()
           : item.drawingSpecification?.toString();
         
-        // Try to get drawing number from populated object first
+        // Try to compute drawing number from populated object first
         if (typeof item.drawingSpecification === 'object' && item.drawingSpecification !== null) {
-          drawingNumber = item.drawingSpecification.drawingNumber || drawingNumber;
+          // Compute drawing number from populated fields (virtual doesn't work with .lean())
+          drawingNumber = computeDrawingNumber(item.drawingSpecification);
         }
         
-        // If not found, try looking up from drawingNumberMap
-        if (drawingNumber === 'Selected' && drawingId && drawingNumberMap[drawingId]) {
+        // If not found in object, try looking up from drawingNumberMap
+        if (!drawingNumber && drawingId && drawingNumberMap[drawingId]) {
           drawingNumber = drawingNumberMap[drawingId];
+        }
+        
+        // Default to 'Selected' only if drawing number is still not found
+        if (!drawingNumber) {
+          console.warn(`[Drawing Number] Drawing number not found for item ${index + 1}, drawingId: ${drawingId}, using 'Selected'`);
+          drawingNumber = 'Selected';
+        } else {
+          console.log(`[Drawing Number] Found drawing number '${drawingNumber}' for item ${index + 1}, drawingId: ${drawingId}`);
         }
         
         drawingInfo = { drawingNumber };
@@ -999,19 +1072,28 @@ const buildItemText = (offerItems, lineOfBusinessType = 'karoseri', drawingNumbe
       // Drawing specification
       if (item.drawingSpecification) {
         // Check if drawingSpecification is populated (object) or just an ObjectId
-        let drawingNumber = 'Selected';
+        let drawingNumber = null;
         const drawingId = typeof item.drawingSpecification === 'object' && item.drawingSpecification !== null
           ? item.drawingSpecification._id?.toString()
           : item.drawingSpecification?.toString();
         
-        // Try to get drawing number from populated object first
+        // Try to compute drawing number from populated object first
         if (typeof item.drawingSpecification === 'object' && item.drawingSpecification !== null) {
-          drawingNumber = item.drawingSpecification.drawingNumber || drawingNumber;
+          // Compute drawing number from populated fields (virtual doesn't work with .lean())
+          drawingNumber = computeDrawingNumber(item.drawingSpecification);
         }
         
-        // If not found, try looking up from drawingNumberMap
-        if (drawingNumber === 'Selected' && drawingId && drawingNumberMap[drawingId]) {
+        // If not found in object, try looking up from drawingNumberMap
+        if (!drawingNumber && drawingId && drawingNumberMap[drawingId]) {
           drawingNumber = drawingNumberMap[drawingId];
+        }
+        
+        // Default to 'Selected' only if drawing number is still not found
+        if (!drawingNumber) {
+          console.warn(`[Drawing Number] Drawing number not found for item ${index + 1}, drawingId: ${drawingId}, using 'Selected'`);
+          drawingNumber = 'Selected';
+        } else {
+          console.log(`[Drawing Number] Found drawing number '${drawingNumber}' for item ${index + 1}, drawingId: ${drawingId}`);
         }
         
         itemText += `\n   Spesifikasi lain sesuai gambar ${drawingNumber}\n`;
@@ -1258,9 +1340,11 @@ const createDrawingsInfo = (itemsWithDrawings, quotationNumber) => {
     
     itemsWithDrawings.forEach((item, index) => {
       const drawing = item.drawingSpecification;
+      // Compute drawing number from populated fields (virtual doesn't work with .lean())
+      const drawingNumber = computeDrawingNumber(drawing) || 'N/A';
       
       drawingsText += `Item ${index + 1}: ${item.karoseri} - ${item.chassis}${item.chassisModel ? ` - ${item.chassisModel}` : ''}\n`;
-      drawingsText += `Drawing Number: ${drawing.drawingNumber || 'N/A'}\n`;
+      drawingsText += `Drawing Number: ${drawingNumber}\n`;
       drawingsText += `\n`;
     });
     
@@ -3103,7 +3187,7 @@ const generateQuotationDocument = async (quotationData, offerId = null, selected
     
     // Create drawing number map for all items (including those without images)
     const drawingNumberMap = {};
-    activeOffer.offerItems.forEach(item => {
+    activeOffer.offerItems.forEach((item, idx) => {
       if (item.drawingSpecification) {
         const drawingId = typeof item.drawingSpecification === 'object' && item.drawingSpecification !== null
           ? item.drawingSpecification._id?.toString()
@@ -3112,12 +3196,20 @@ const generateQuotationDocument = async (quotationData, offerId = null, selected
           const drawing = typeof item.drawingSpecification === 'object' && item.drawingSpecification !== null
             ? item.drawingSpecification
             : null;
-          if (drawing && drawing.drawingNumber) {
-            drawingNumberMap[drawingId] = drawing.drawingNumber;
+          // Compute drawing number from populated fields (virtual doesn't work with .lean())
+          if (drawing) {
+            const computedDrawingNumber = computeDrawingNumber(drawing);
+            if (computedDrawingNumber) {
+              drawingNumberMap[drawingId] = computedDrawingNumber;
+              console.log(`[Drawing Number Map] Added drawing number '${computedDrawingNumber}' for drawingId ${drawingId} (item ${idx + 1})`);
+            } else {
+              console.warn(`[Drawing Number Map] Could not compute drawing number for drawingId ${drawingId} (item ${idx + 1})`);
+            }
           }
         }
       }
     });
+    console.log(`[Drawing Number Map] Built map with ${Object.keys(drawingNumberMap).length} entries`);
     
     // Create drawings information
     const drawingsInfo = itemsWithDrawings.length > 0 
@@ -3144,7 +3236,9 @@ const generateQuotationDocument = async (quotationData, offerId = null, selected
           // Handle both single image (string) and multiple images (array)
           const base64Images = Array.isArray(base64Result) ? base64Result : [base64Result];
           
-          console.log(`[Image Loading] Processing ${base64Images.length} image(s) for drawing ${drawing._id} (${drawing.drawingNumber})`);
+          // Compute drawing number from populated fields (virtual doesn't work with .lean())
+          const computedDrawingNumber = computeDrawingNumber(drawing) || 'N/A';
+          console.log(`[Image Loading] Processing ${base64Images.length} image(s) for drawing ${drawing._id} (${computedDrawingNumber})`);
           
           // Add each image to imageData
           base64Images.forEach((base64String, imageIndex) => {
@@ -3153,7 +3247,7 @@ const generateQuotationDocument = async (quotationData, offerId = null, selected
               chassis: item.chassis,
               imageTag: base64String,
               itemNumber: activeOffer.offerItems.indexOf(item) + 1,
-              drawingNumber: drawing.drawingNumber,
+              drawingNumber: computedDrawingNumber,
               filename: quotationImage.originalName,
               pageNumber: base64Images.length > 1 ? imageIndex + 1 : undefined // Add page number for multi-page PDFs
             };
