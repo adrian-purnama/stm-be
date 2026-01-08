@@ -2151,7 +2151,8 @@ const generateDocumentXMLFromScratch = async (templateData, tableMap = {}, heade
   }
   
   // Drawings section - moved after marketing name
-  if (templateData.has_drawings && templateData.drawings_info) {
+  // Only add page break if there are actually images to show
+  if (templateData.has_drawings && templateData.drawings_info && templateData.has_images && templateData.images && templateData.images.length > 0) {
     // Add page break before drawings, but skip the text (only show images)
     bodyXML += '<w:p><w:pPr><w:pageBreakBefore/></w:pPr></w:p>';
     // Skip adding the drawings_info text - only images will be shown
@@ -2216,6 +2217,96 @@ const generateDocumentXMLFromScratch = async (templateData, tableMap = {}, heade
   
   sectPrContent += `<w:cols w:space="708"/><w:docGrid w:linePitch="360"/>`;
   
+  // Remove trailing empty paragraphs to prevent blank pages
+  // Match and remove trailing empty paragraphs (paragraphs with only pPr and no content like w:r, w:drawing, w:tbl)
+  // Keep removing empty paragraphs from the end until we find one with content
+  let trimmed = bodyXML;
+  let previousTrimmed = '';
+  while (trimmed !== previousTrimmed) {
+    previousTrimmed = trimmed;
+    // Match empty paragraph at the end: <w:p> followed by <w:pPr>...content...</w:pPr> and </w:p> with no w:r, w:drawing, w:tbl, w:tbl in between
+    trimmed = trimmed.replace(/<w:p><w:pPr>[\s\S]*?<\/w:pPr><\/w:p>\s*$/g, '');
+  }
+  bodyXML = trimmed;
+  
+  // Find the last paragraph and check if it has content
+  // If it has content, create a separate truly minimal paragraph for sectPr (no spacing at all)
+  // If it's empty, attach sectPr to it with no spacing
+  let finalBodyXML = bodyXML;
+  const lastParaEndIndex = bodyXML.lastIndexOf('</w:p>');
+  
+  if (lastParaEndIndex !== -1) {
+    // Find the start of this paragraph by going backwards
+    const lastParaStartIndex = bodyXML.lastIndexOf('<w:p>', lastParaEndIndex);
+    
+    if (lastParaStartIndex !== -1) {
+      // Extract the last paragraph
+      const lastPara = bodyXML.substring(lastParaStartIndex, lastParaEndIndex + 5);
+      
+      // Check if this paragraph has actual content (runs, drawings, tables, etc.)
+      const hasContent = lastPara.includes('<w:r>') || 
+                        lastPara.includes('<w:drawing>') || 
+                        lastPara.includes('<w:tbl>') || 
+                        lastPara.includes('<w:txbxContent>');
+      
+      if (hasContent) {
+        // Last paragraph has content - create a separate truly minimal paragraph for sectPr
+        // Use absolutely no spacing and minimal line height to prevent blank page
+        finalBodyXML = bodyXML + `<w:p><w:pPr><w:spacing w:after="0" w:before="0" w:line="1" w:lineRule="atLeast"/><w:sectPr>${sectPrContent}</w:sectPr></w:pPr></w:p>`;
+      } else {
+        // Last paragraph is empty - attach sectPr to it with minimal settings
+        if (lastPara.includes('<w:pPr>')) {
+          // Get the pPr content and remove ALL spacing
+          const pPrStartIndex = lastPara.indexOf('<w:pPr>');
+          const pPrEndIndex = lastPara.lastIndexOf('</w:pPr>');
+          if (pPrEndIndex !== -1) {
+            const pPrContent = lastPara.substring(pPrStartIndex + 7, pPrEndIndex);
+            
+            // Remove ALL spacing and properties that could cause blank page
+            let cleanedPPrContent = pPrContent
+              .replace(/<w:spacing[^>]*\/>/g, '')
+              .replace(/<w:spacing[^>]*>[\s\S]*?<\/w:spacing>/g, '')
+              .replace(/<w:keepNext[^>]*\/>/g, '')
+              .replace(/<w:keepLines[^>]*\/>/g, '')
+              .replace(/<w:pageBreakBefore[^>]*\/>/g, '')
+              .replace(/<w:widowControl[^>]*\/>/g, '')
+              .trim();
+            
+            // Create minimal pPr with only sectPr and minimal line height (1 twip = almost nothing)
+            const updatedPPr = `<w:pPr><w:spacing w:after="0" w:before="0" w:line="1" w:lineRule="atLeast"/>${cleanedPPrContent}<w:sectPr>${sectPrContent}</w:sectPr></w:pPr>`;
+            
+            // Reconstruct paragraph
+            const beforePPr = lastPara.substring(0, pPrStartIndex);
+            const afterPPr = lastPara.substring(pPrEndIndex + 7);
+            const updatedPara = beforePPr + updatedPPr + afterPPr;
+            
+            finalBodyXML = bodyXML.substring(0, lastParaStartIndex) + updatedPara + bodyXML.substring(lastParaEndIndex + 5);
+          } else {
+            // Fallback
+            const updatedPara = lastPara.replace(
+              /(<\/w:pPr>)/,
+              `<w:spacing w:after="0" w:before="0" w:line="1" w:lineRule="atLeast"/><w:sectPr>${sectPrContent}</w:sectPr>$1`
+            );
+            finalBodyXML = bodyXML.substring(0, lastParaStartIndex) + updatedPara + bodyXML.substring(lastParaEndIndex + 5);
+          }
+        } else {
+          // Add pPr with sectPr (minimal line height)
+          const updatedPara = lastPara.replace(
+            /(<w:p>)/,
+            `$1<w:pPr><w:spacing w:after="0" w:before="0" w:line="1" w:lineRule="atLeast"/><w:sectPr>${sectPrContent}</w:sectPr></w:pPr>`
+          );
+          finalBodyXML = bodyXML.substring(0, lastParaStartIndex) + updatedPara + bodyXML.substring(lastParaEndIndex + 5);
+        }
+      }
+    } else {
+      // No paragraph start found, add minimal paragraph
+      finalBodyXML = bodyXML + `<w:p><w:pPr><w:spacing w:after="0" w:before="0" w:line="1" w:lineRule="atLeast"/><w:sectPr>${sectPrContent}</w:sectPr></w:pPr></w:p>`;
+    }
+  } else {
+    // No paragraphs found, add minimal paragraph
+    finalBodyXML = bodyXML + `<w:p><w:pPr><w:spacing w:after="0" w:before="0" w:line="1" w:lineRule="atLeast"/><w:sectPr>${sectPrContent}</w:sectPr></w:pPr></w:p>`;
+  }
+  
   // Build complete document XML
   const documentXML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -2225,8 +2316,7 @@ const generateDocumentXMLFromScratch = async (templateData, tableMap = {}, heade
             xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"
             xmlns:v="urn:schemas-microsoft-com:vml">
   <w:body>
-    ${bodyXML}
-    <w:p><w:pPr><w:spacing w:after="0" w:line="200" w:lineRule="auto"/><w:sectPr>${sectPrContent}</w:sectPr></w:pPr></w:p>
+    ${finalBodyXML}
   </w:body>
 </w:document>`;
   
