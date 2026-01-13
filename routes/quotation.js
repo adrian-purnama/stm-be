@@ -105,16 +105,196 @@ router.get('/', authenticateToken, authorize(['quotation_view']), async (req, re
     if (ops.status && ops.status.length > 0) {
       userFilters.status = ops.status.length === 1 ? ops.status[0] : { $in: ops.status };
     }
-    if (ops.customer && ops.customer.length > 0) {
-      const escapedCustomer = ops.customer.map(term => escapeRegex(term)).join('|');
-      userFilters.customer = { $regex: escapedCustomer, $options: 'i' };
-    }
-    if (ops.marketing && ops.marketing.length > 0) {
-      const escapedMarketing = ops.marketing.map(term => escapeRegex(term)).join('|');
-      userFilters.marketing = { $regex: escapedMarketing, $options: 'i' };
-    }
     if (ops.type && ops.type.length > 0) {
       userFilters['lineOfBusiness.type'] = ops.type.length === 1 ? ops.type[0] : { $in: ops.type };
+    }
+    
+    // Handle customer: operator - search in RFQ model
+    if (ops.customer && ops.customer.length > 0) {
+      const { RFQ } = require('../models/rfq.model');
+      const escapedCustomer = ops.customer.map(term => escapeRegex(term)).join('|');
+      const customerRegex = new RegExp(escapedCustomer, 'i');
+      const matchingRFQs = await RFQ.find({
+        customerName: { $regex: customerRegex }
+      }).select('quotationId').lean();
+      
+      const quotationIds = matchingRFQs
+        .map(rfq => rfq.quotationId)
+        .filter(Boolean)
+        .map(id => id.toString ? id.toString() : id);
+      
+      if (quotationIds.length > 0) {
+        userFilters.rfqQuotationIds = quotationIds;
+      } else {
+        // No matching RFQs found - set to empty array to return no results
+        userFilters.rfqQuotationIds = [];
+      }
+    }
+    
+    // Handle marketing: operator - search in RFQ model (marketing name comes from requester)
+    if (ops.marketing && ops.marketing.length > 0) {
+      const { RFQ } = require('../models/rfq.model');
+      const escapedMarketing = ops.marketing.map(term => escapeRegex(term)).join('|');
+      const marketingRegex = new RegExp(escapedMarketing, 'i');
+      
+      // Find users matching marketing name
+      const matchingUsers = await User.find({
+        $or: [
+          { fullName: { $regex: marketingRegex } },
+          { email: { $regex: marketingRegex } }
+        ]
+      }).select('_id').lean();
+      
+      if (matchingUsers.length > 0) {
+        const userIds = matchingUsers.map(u => u._id);
+        // Find RFQs where requester matches
+        const matchingRFQs = await RFQ.find({
+          requesterId: { $in: userIds }
+        }).select('quotationId').lean();
+        
+        const quotationIds = matchingRFQs
+          .map(rfq => rfq.quotationId)
+          .filter(Boolean)
+          .map(id => id.toString ? id.toString() : id);
+        
+        if (quotationIds.length > 0) {
+          userFilters.rfqQuotationIds = userFilters.rfqQuotationIds 
+            ? [...new Set([...userFilters.rfqQuotationIds, ...quotationIds])]
+            : quotationIds;
+        } else if (!userFilters.rfqQuotationIds) {
+          userFilters.rfqQuotationIds = [];
+        }
+      } else if (!userFilters.rfqQuotationIds) {
+        // No matching users found - set to empty array to return no results
+        userFilters.rfqQuotationIds = [];
+      }
+    }
+    
+    // Handle requester: operator - search directly in quotation headers
+    if (ops.requester && ops.requester.length > 0) {
+      const requesterSearchTerms = ops.requester.map(term => escapeRegex(term)).join('|');
+      const requesterRegex = new RegExp(requesterSearchTerms, 'i');
+      
+      // Find users matching requester name/email (case-insensitive, partial match)
+      const matchingUsers = await User.find({
+        $or: [
+          { fullName: { $regex: requesterRegex } },
+          { email: { $regex: requesterRegex } }
+        ]
+      }).select('_id fullName email').lean();
+      
+      // Debug logging
+      console.log(`[Search] requester:${ops.requester.join(',')} - Found ${matchingUsers.length} users:`, 
+        matchingUsers.map(u => ({ id: u._id, name: u.fullName, email: u.email })));
+      
+      if (matchingUsers.length > 0) {
+        const userIds = matchingUsers.map(u => u._id);
+        // Filter quotations by requesterId directly in header
+        userFilters.requesterId = userIds.length === 1 ? userIds[0] : { $in: userIds };
+      } else {
+        // No matching users found - set to empty array to return no results
+        userFilters.requesterId = { $in: [] };
+      }
+    }
+    
+    // Handle approver: operator - search directly in quotation headers
+    if (ops.approver && ops.approver.length > 0) {
+      const approverSearchTerms = ops.approver.map(term => escapeRegex(term)).join('|');
+      const approverRegex = new RegExp(approverSearchTerms, 'i');
+      
+      // Find users matching approver name/email (case-insensitive, partial match)
+      const matchingUsers = await User.find({
+        $or: [
+          { fullName: { $regex: approverRegex } },
+          { email: { $regex: approverRegex } }
+        ]
+      }).select('_id').lean();
+      
+      if (matchingUsers.length > 0) {
+        const userIds = matchingUsers.map(u => u._id);
+        // Filter quotations by approverId directly in header
+        userFilters.approverId = userIds.length === 1 ? userIds[0] : { $in: userIds };
+      } else {
+        // No matching users found - set to empty array to return no results
+        userFilters.approverId = { $in: [] };
+      }
+    }
+    
+    // Handle creator: operator - search directly in quotation headers
+    if (ops.creator && ops.creator.length > 0) {
+      const creatorSearchTerms = ops.creator.map(term => escapeRegex(term)).join('|');
+      const creatorRegex = new RegExp(creatorSearchTerms, 'i');
+      
+      // Find users matching creator name/email (case-insensitive, partial match)
+      const matchingUsers = await User.find({
+        $or: [
+          { fullName: { $regex: creatorRegex } },
+          { email: { $regex: creatorRegex } }
+        ]
+      }).select('_id').lean();
+      
+      if (matchingUsers.length > 0) {
+        const userIds = matchingUsers.map(u => u._id);
+        // Filter quotations by creatorId directly in header
+        userFilters.creatorId = userIds.length === 1 ? userIds[0] : { $in: userIds };
+      } else {
+        // No matching users found - set to empty array to return no results
+        userFilters.creatorId = { $in: [] };
+      }
+    }
+    
+    // Handle from: and to: date operators
+    if (ops.from && ops.from.length > 0) {
+      // Use the first from date if multiple provided
+      const fromDate = ops.from[0];
+      userFilters.startDate = fromDate;
+    }
+    if (ops.to && ops.to.length > 0) {
+      // Use the first to date if multiple provided
+      const toDate = ops.to[0];
+      userFilters.endDate = toDate;
+    }
+    
+    // Handle bodyType: operator - search by body type name
+    if (ops.bodyType && ops.bodyType.length > 0) {
+      const BodyType = require('../models/bodyType.model');
+      const bodyTypeSearchTerms = ops.bodyType.map(term => escapeRegex(term)).join('|');
+      const bodyTypeRegex = new RegExp(bodyTypeSearchTerms, 'i');
+      const matchingBodyTypes = await BodyType.find({
+        $or: [
+          { name: { $regex: bodyTypeRegex } },
+          { shortName: { $regex: bodyTypeRegex } }
+        ]
+      }).select('_id').lean();
+      
+      if (matchingBodyTypes.length > 0) {
+        const bodyTypeIds = matchingBodyTypes.map(bt => bt._id);
+        userFilters.bodyTypeId = bodyTypeIds.length === 1 ? bodyTypeIds[0] : { $in: bodyTypeIds };
+      } else {
+        // No matching body types found - set to empty array to return no results
+        userFilters.bodyTypeId = { $in: [] };
+      }
+    }
+    
+    // Handle chassisType: operator - search by chassis type name
+    if (ops.chassisType && ops.chassisType.length > 0) {
+      const ChassisType = require('../models/chassisType.model');
+      const chassisTypeSearchTerms = ops.chassisType.map(term => escapeRegex(term)).join('|');
+      const chassisTypeRegex = new RegExp(chassisTypeSearchTerms, 'i');
+      const matchingChassisTypes = await ChassisType.find({
+        $or: [
+          { name: { $regex: chassisTypeRegex } },
+          { shortName: { $regex: chassisTypeRegex } }
+        ]
+      }).select('_id').lean();
+      
+      if (matchingChassisTypes.length > 0) {
+        const chassisTypeIds = matchingChassisTypes.map(ct => ct._id);
+        userFilters.chassisTypeId = chassisTypeIds.length === 1 ? chassisTypeIds[0] : { $in: chassisTypeIds };
+      } else {
+        // No matching chassis types found - set to empty array to return no results
+        userFilters.chassisTypeId = { $in: [] };
+      }
     }
     
     // Handle array filters from advanced filters (status, lineOfBusiness)
@@ -133,10 +313,41 @@ router.get('/', authenticateToken, authorize(['quotation_view']), async (req, re
       }
     }
     
-    // Global search (fuzzy terms and phrases) - will be handled in getQuotations helper
+    // Handle bodyType filter from dropdown (direct filter param, not search operator)
+    if (filters.bodyType && !userFilters.bodyTypeId) {
+      const BodyType = require('../models/bodyType.model');
+      const bodyType = await BodyType.findById(filters.bodyType).select('_id').lean();
+      if (bodyType) {
+        userFilters.bodyTypeId = bodyType._id;
+      }
+    }
+    
+    // Handle chassisType filter from dropdown (direct filter param, not search operator)
+    if (filters.chassisType && !userFilters.chassisTypeId) {
+      const ChassisType = require('../models/chassisType.model');
+      const chassisType = await ChassisType.findById(filters.chassisType).select('_id').lean();
+      if (chassisType) {
+        userFilters.chassisTypeId = chassisType._id;
+      }
+    }
+    
+    // Global search (fuzzy terms and phrases) - search quotation numbers when no prefix
     if (ops.global.length > 0 || ops.globalPhrases.length > 0) {
       const allSearchTerms = [...ops.global, ...ops.globalPhrases];
-      userFilters.search = allSearchTerms.join(' ');
+      // If there are no field-specific operators, treat global search as quotation number search
+      const hasFieldOperators = ops.customer || ops.marketing || ops.requester || ops.approver || 
+                                ops.status || ops.type || ops.bodyType || ops.chassisType || 
+                                ops.from || ops.to;
+      
+      if (!hasFieldOperators) {
+        // Search quotation numbers directly
+        const quotationNumberPattern = allSearchTerms.join('.*');
+        userFilters.quotationNumber = { $regex: quotationNumberPattern, $options: 'i' };
+      } else {
+        // If there are field operators, also search quotation numbers as additional filter
+        const quotationNumberPattern = allSearchTerms.join('.*');
+        userFilters.searchQuotationNumber = { $regex: quotationNumberPattern, $options: 'i' };
+      }
     }
     
     // Apply role-based filtering based on filterMode

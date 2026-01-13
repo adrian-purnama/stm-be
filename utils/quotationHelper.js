@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const QuotationHeader = require('../models/quotationHeader.model');
 const QuotationOffer = require('../models/quotationOffer.model');
 const OfferItem = require('../models/offerItem.model');
@@ -1120,6 +1121,90 @@ const getQuotations = async (filters = {}, pagination = { page: 1, limit: 10 }, 
     if (!Object.keys(headerQuery.createdAt).length) {
       delete headerQuery.createdAt;
     }
+  }
+  
+  // Handle bodyTypeId and chassisTypeId filters
+  // These require joining with offer items, so we'll filter headers by header IDs
+  const bodyTypeIdFilter = filters.bodyTypeId;
+  const chassisTypeIdFilter = filters.chassisTypeId;
+  
+  // If filtering by bodyTypeId or chassisTypeId, we need to find quotation headers that have matching offer items
+  let matchingHeaderIds = null;
+  if (bodyTypeIdFilter || chassisTypeIdFilter) {
+    const offerItemQuery = {};
+    if (bodyTypeIdFilter) {
+      if (typeof bodyTypeIdFilter === 'object' && bodyTypeIdFilter.$in) {
+        offerItemQuery.bodyTypeId = bodyTypeIdFilter;
+      } else {
+        offerItemQuery.bodyTypeId = bodyTypeIdFilter;
+      }
+    }
+    if (chassisTypeIdFilter) {
+      if (typeof chassisTypeIdFilter === 'object' && chassisTypeIdFilter.$in) {
+        offerItemQuery.chassisTypeId = chassisTypeIdFilter;
+      } else {
+        offerItemQuery.chassisTypeId = chassisTypeIdFilter;
+      }
+    }
+    
+    // Find all offer items matching the filter
+    const matchingOfferItems = await OfferItem.find(offerItemQuery)
+      .select('quotationOfferId')
+      .lean();
+    
+    // Extract unique offer IDs
+    const offerIds = [...new Set(matchingOfferItems.map(item => item.quotationOfferId?.toString()).filter(Boolean))];
+    
+    if (offerIds.length === 0) {
+      // No matching offer items found - return empty result early
+      return {
+        quotations: [],
+        pagination: {
+          current: page,
+          pages: 0,
+          total: 0
+        }
+      };
+    }
+    
+    // Find quotation offers and get their header IDs
+    const QuotationOffer = require('../models/quotationOffer.model');
+    const matchingOffers = await QuotationOffer.find({
+      _id: { $in: offerIds }
+    })
+      .select('quotationHeaderId')
+      .lean();
+    
+    // Extract unique header IDs
+    const headerIdsSet = new Set();
+    matchingOffers.forEach(offer => {
+      if (offer.quotationHeaderId) {
+        headerIdsSet.add(offer.quotationHeaderId.toString());
+      }
+    });
+    
+    matchingHeaderIds = Array.from(headerIdsSet).map(id => {
+      try {
+        return new mongoose.Types.ObjectId(id);
+      } catch (e) {
+        return null;
+      }
+    }).filter(Boolean);
+    
+    // If no matching headers found, return empty result early
+    if (matchingHeaderIds.length === 0) {
+      return {
+        quotations: [],
+        pagination: {
+          current: page,
+          pages: 0,
+          total: 0
+        }
+      };
+    }
+    
+    // Add header ID filter to header query
+    headerQuery._id = { $in: matchingHeaderIds };
   }
 
   // Get headers with pagination
