@@ -1123,6 +1123,55 @@ const getQuotations = async (filters = {}, pagination = { page: 1, limit: 10 }, 
     }
   }
   
+  // Handle quotationNumber filter (simple search)
+  // Check both top-level and inside $and array
+  let quotationNumberFilter = null;
+  if (filters.quotationNumber) {
+    quotationNumberFilter = filters.quotationNumber;
+    console.log('[getQuotations] Found quotationNumber at top level:', quotationNumberFilter);
+  }
+  
+  // Handle $and conditions (like my_quotations filter)
+  let otherAndConditions = [];
+  if (filters.$and && Array.isArray(filters.$and)) {
+    console.log('[getQuotations] Found $and array with', filters.$and.length, 'conditions');
+    // Separate quotationNumber from other conditions
+    filters.$and.forEach(condition => {
+      if (condition.quotationNumber) {
+        quotationNumberFilter = condition.quotationNumber;
+        console.log('[getQuotations] Found quotationNumber inside $and:', quotationNumberFilter);
+      } else {
+        otherAndConditions.push(condition);
+      }
+    });
+  }
+  
+  // Apply quotationNumber filter
+  if (quotationNumberFilter) {
+    console.log('[getQuotations] Applied quotationNumber filter:', quotationNumberFilter);
+    
+    // If we have other $and conditions, combine them
+    if (otherAndConditions.length > 0) {
+      headerQuery.$and = [
+        { quotationNumber: quotationNumberFilter },
+        ...otherAndConditions
+      ];
+    } else {
+      // No other conditions, just use quotationNumber directly
+      headerQuery.quotationNumber = quotationNumberFilter;
+    }
+  } else if (otherAndConditions.length > 0) {
+    // No quotationNumber, but we have other $and conditions
+    if (otherAndConditions.length === 1) {
+      // If only one condition, merge it directly into headerQuery
+      Object.assign(headerQuery, otherAndConditions[0]);
+    } else {
+      headerQuery.$and = otherAndConditions;
+    }
+  }
+  
+  console.log('[getQuotations] Final headerQuery:', JSON.stringify(headerQuery, null, 2));
+  
   // Handle bodyTypeId and chassisTypeId filters
   // These require joining with offer items, so we'll filter headers by header IDs
   const bodyTypeIdFilter = filters.bodyTypeId;
@@ -1204,7 +1253,17 @@ const getQuotations = async (filters = {}, pagination = { page: 1, limit: 10 }, 
     }
     
     // Add header ID filter to header query
-    headerQuery._id = { $in: matchingHeaderIds };
+    // Use $and to combine with existing filters (like quotationNumber)
+    if (Object.keys(headerQuery).length > 0 && (headerQuery.quotationNumber || headerQuery.status || headerQuery['lineOfBusiness.type'])) {
+      // If there are other filters, combine them with $and
+      if (!headerQuery.$and) {
+        headerQuery.$and = [];
+      }
+      headerQuery.$and.push({ _id: { $in: matchingHeaderIds } });
+    } else {
+      // No other filters, just set the _id filter directly
+      headerQuery._id = { $in: matchingHeaderIds };
+    }
   }
 
   // Get headers with pagination
@@ -1274,51 +1333,11 @@ const getQuotations = async (filters = {}, pagination = { page: 1, limit: 10 }, 
       // Header is already a plain object, so we need to get quotationNumber from it
       const quotationNumber = header.quotationNumber || header._id.toString();
       const { header: mappedHeader, rfq, offers: offersGrouped } = await getQuotationOffers(quotationNumber);
-      let groupedOffers = offersGrouped;
-
-    // If filtering by search term, filter offers
-    if (filters.search) {
-      const searchRegex = new RegExp(filters.search, 'i');
-        const filteredGroups = [];
-        
-        groupedOffers.forEach(offerGroup => {
-          const originalMatches = searchRegex.test(offerGroup.original.karoseri) ||
-                                 searchRegex.test(offerGroup.original.chassis) ||
-                                 offerGroup.original.specifications.some(spec => searchRegex.test(spec));
-          
-          const revisionMatches = offerGroup.revisions.filter(revision =>
-            searchRegex.test(revision.karoseri) ||
-            searchRegex.test(revision.chassis) ||
-            revision.specifications.some(spec => searchRegex.test(spec))
-          );
-          
-          if (originalMatches || revisionMatches.length > 0) {
-            filteredGroups.push({
-              original: offerGroup.original,
-              revisions: originalMatches ? offerGroup.revisions : revisionMatches
-            });
-          }
-        });
-        
-        groupedOffers = filteredGroups;
-    }
-
-    // If no offers match filters when searching, skip this header
-      if (filters.search && groupedOffers.length === 0) {
-      continue;
-    }
-
-    if (filters.customer && rfq) {
-        const matchesCustomer = new RegExp(filters.customer, 'i').test(rfq.customerName || '');
-        if (!matchesCustomer) {
-          continue;
-        }
-      }
 
     quotations.push({
         header: mappedHeader,
         rfq,
-        offers: groupedOffers
+        offers: offersGrouped
       });
     } catch (error) {
       const quotationNumber = header.quotationNumber || header._id?.toString() || 'unknown';
