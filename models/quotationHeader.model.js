@@ -41,7 +41,7 @@ const quotationHeaderSchema = new mongoose.Schema({
   lineOfBusiness: {
     type: {
       type: String,
-      enum: ['karoseri', 'service', 'sparepart'],
+      enum: ['karoseri', 'non_karoseri', 'service', 'sparepart'],
       default: 'karoseri',
       required: true
     }

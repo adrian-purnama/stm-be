@@ -80,11 +80,11 @@ const rfqItemSchema = new mongoose.Schema({
     ref: 'DrawingSpecification'
   },
 
-  // Template mode: 'manual', 'bodyType', 'drawing' (for karoseri only)
+  // Template mode: 'manual', 'bodyType', 'drawing' (for karoseri) or optional (for non_karoseri)
   templateMode: {
     type: String,
     enum: ['manual', 'bodyType', 'drawing'],
-    default: 'manual'
+    required: false // Optional for non_karoseri, required for karoseri (handled in route)
   },
   
   // Template source model name (used by refPath)
@@ -475,7 +475,7 @@ const rfqSchema = new mongoose.Schema({
   lineOfBusiness: {
     type: {
       type: String,
-      enum: ['karoseri', 'service', 'sparepart'],
+      enum: ['karoseri', 'non_karoseri', 'service', 'sparepart'],
       default: 'karoseri',
       required: true
     }

@@ -643,9 +643,10 @@ router.post('/', authenticateToken, authorize(['quotation_create']), async (req,
     // If RFQ was provided, get RFQ data and transfer it to offerData
     if (rfqId) {
       const { RFQ, RFQItem } = require('../models/rfq.model');
+      const { getRFQById } = require('../utils/rfqHelper');
       
-      // Get RFQ with populated items
-      const rfq = await RFQ.findById(rfqId).populate('items');
+      // Get RFQ with populated items (using getRFQById to ensure templateMode is included)
+      const rfq = await getRFQById(rfqId);
       
       if (rfq) {
         // Transfer RFQ data to header data
@@ -671,7 +672,7 @@ router.post('/', authenticateToken, authorize(['quotation_create']), async (req,
             };
             
             // Add type-specific fields
-            if (lineOfBusinessType === 'karoseri') {
+            if (lineOfBusinessType === 'karoseri' || lineOfBusinessType === 'non_karoseri') {
               return {
                 ...baseItem,
                 karoseri: rfqItem.karoseri,
@@ -680,7 +681,7 @@ router.post('/', authenticateToken, authorize(['quotation_create']), async (req,
                 drawingSpecification: rfqItem.drawingSpecification,
                 bodyTypeId: rfq.bodyTypeId || rfqItem.bodyTypeId, // Use RFQ-level or item-level
                 chassisTypeId: rfq.chassisTypeId || rfqItem.chassisTypeId, // Use RFQ-level or item-level
-                templateMode: rfqItem.templateMode,
+                templateMode: rfqItem.templateMode, // Preserve templateMode for both karoseri and non_karoseri
                 templateSourceModel: rfqItem.templateSourceModel,
                 templateSourceId: rfqItem.templateSourceId,
                 specifications: rfqItem.specifications

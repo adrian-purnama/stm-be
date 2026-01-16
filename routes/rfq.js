@@ -857,6 +857,66 @@ router.post('/', authenticateToken, authorize(['quotation_requester']), async (r
           }
           }
         }
+      } else if (lineOfBusinessType === 'non_karoseri') {
+        // Non Karoseri-specific validation - bodyTypeId and chassisTypeId are optional
+        // But if provided, validate they exist
+        if (bodyTypeId) {
+          console.log('[RFQ POST] Step 5.2: Validating bodyType for non_karoseri');
+          const BodyType = require('../models/bodyType.model');
+          const bodyType = await BodyType.findById(bodyTypeId).select('_id name shortName').lean();
+          if (!bodyType) {
+            return sendErrorResponse(res, 400, 'Invalid body type selected');
+          }
+          console.log('[RFQ POST] Step 5.2: BodyType validated');
+        }
+        if (chassisTypeId) {
+          console.log('[RFQ POST] Step 5.2: Validating chassisType for non_karoseri');
+          const ChassisType = require('../models/chassisType.model');
+          const chassisType = await ChassisType.findById(chassisTypeId).select('_id name shortName').lean();
+          if (!chassisType) {
+            return sendErrorResponse(res, 400, 'Invalid chassis type selected');
+          }
+          console.log('[RFQ POST] Step 5.2: ChassisType validated');
+        }
+        
+        // For non_karoseri, validate items array (allow empty for drafts)
+        if (!isDraft && (!items || !Array.isArray(items) || items.length === 0)) {
+          return sendErrorResponse(res, 400, 'At least one item is required for non_karoseri type');
+        }
+        
+        // Validate items - similar to karoseri but with optional templateMode, bodyType, chassisType
+        if (!isDraft && items && items.length > 0) {
+          for (const item of items) {
+            // Quantity is required
+            if (!item.quantity || item.quantity < 1) {
+              return sendErrorResponse(res, 400, 'Each item must have a quantity of at least 1');
+            }
+            
+            // Estimated Revenue is required for each item (0 is a valid value)
+            if (item.estimatedRevenue === undefined || item.estimatedRevenue === null || 
+                isNaN(parseFloat(item.estimatedRevenue)) || parseFloat(item.estimatedRevenue) < 0) {
+              return sendErrorResponse(res, 400, 'Each item must have an estimated revenue >= 0');
+            }
+            
+            // templateMode is optional - if provided, validate it's valid
+            if (item.templateMode && !['manual', 'bodyType', 'drawing'].includes(item.templateMode)) {
+              return sendErrorResponse(res, 400, 'If template mode is provided, it must be manual, bodyType, or drawing');
+            }
+            
+            // For manual mode, bodyType and chassisType are optional
+            // For bodyType or drawing mode, templateSourceId is optional but recommended
+            if (item.templateMode === 'bodyType' && item.templateSourceId) {
+              // Set templateSourceModel for refPath to work correctly
+              item.templateSourceModel = 'BodyType';
+            } else if (item.templateMode === 'drawing' && item.templateSourceId) {
+              // Set templateSourceModel for refPath to work correctly
+              item.templateSourceModel = 'DrawingSpecification';
+            } else if (item.templateMode === 'manual' || !item.templateMode) {
+              // Manual mode or no template mode - no template source
+              item.templateSourceModel = null;
+            }
+          }
+        }
       } else if (lineOfBusinessType === 'service') {
         // For service, validate items array (allow empty for drafts)
         if (!isDraft && (!items || !Array.isArray(items) || items.length === 0)) {
@@ -956,8 +1016,8 @@ router.post('/', authenticateToken, authorize(['quotation_requester']), async (r
       exclusionNotes: normalizedExclusionNotes,
       isTaxIncluded: normalizedIsTaxIncluded,
       includePPN: normalizedIncludePPN,
-      bodyTypeId: lineOfBusinessType === 'karoseri' ? bodyTypeId : undefined,
-      chassisTypeId: lineOfBusinessType === 'karoseri' ? chassisTypeId : undefined,
+      bodyTypeId: (lineOfBusinessType === 'karoseri' || lineOfBusinessType === 'non_karoseri') ? bodyTypeId : undefined,
+      chassisTypeId: (lineOfBusinessType === 'karoseri' || lineOfBusinessType === 'non_karoseri') ? chassisTypeId : undefined,
       lineOfBusiness: lineOfBusinessData,
       stage: 'sales',
       timeline: [{
@@ -1005,7 +1065,7 @@ router.post('/', authenticateToken, authorize(['quotation_requester']), async (r
         };
         
         // Type-specific fields
-        if (lineOfBusinessType === 'karoseri') {
+        if (lineOfBusinessType === 'karoseri' || lineOfBusinessType === 'non_karoseri') {
           // Determine templateSourceModel based on templateMode
           let templateSourceModel = null;
           if (item.templateMode === 'bodyType') {
@@ -1018,7 +1078,27 @@ router.post('/', authenticateToken, authorize(['quotation_requester']), async (r
           itemData.chassis = item.chassis || '';
           itemData.chassisModel = item.chassisModel || '';
           itemData.drawingSpecification = item.drawingSpecification || undefined;
-          itemData.templateMode = item.templateMode || 'manual';
+          // For non_karoseri, templateMode can be empty/null; for karoseri, default to 'manual'
+          // Only set templateMode if it has a valid value (not empty string)
+          if (lineOfBusinessType === 'non_karoseri') {
+            // For non_karoseri, only set templateMode if provided and not empty
+            console.log(`[RFQ POST] Item ${i + 1} - templateMode check:`, {
+              received: item.templateMode,
+              type: typeof item.templateMode,
+              isEmpty: !item.templateMode || item.templateMode === '',
+              willSave: item.templateMode && item.templateMode !== ''
+            });
+            if (item.templateMode && item.templateMode !== '') {
+              itemData.templateMode = item.templateMode;
+              console.log(`[RFQ POST] Item ${i + 1} - Saving templateMode:`, itemData.templateMode);
+            } else {
+              console.log(`[RFQ POST] Item ${i + 1} - Not saving templateMode (empty or not provided)`);
+            }
+            // If empty or not provided, don't set templateMode (field will be undefined/optional)
+          } else {
+            // For karoseri, always set templateMode (default to 'manual' if not provided)
+            itemData.templateMode = item.templateMode || 'manual';
+          }
           itemData.templateSourceModel = templateSourceModel;
           itemData.templateSourceId = item.templateSourceId || undefined;
           itemData.specifications = item.specifications || [];
@@ -1058,7 +1138,7 @@ router.post('/', authenticateToken, authorize(['quotation_requester']), async (r
         console.log('[RFQ POST] Step 9.3: Preparing specsOriginal for engineering review');
         // Prepare specsOriginal for engineering review - limit data to essential fields only
         let specsOriginal = [];
-        if (lineOfBusinessType === 'karoseri') {
+        if (lineOfBusinessType === 'karoseri' || lineOfBusinessType === 'non_karoseri') {
           specsOriginal = (rfq.items || []).map(item => ({
             itemNumber: item.itemNumber,
             karoseri: item.karoseri,
@@ -1258,7 +1338,7 @@ router.post('/:id/submit-to-engineering', authenticateToken, authorize(['quotati
     // Prepare specs snapshot for engineeringTransit.specsOriginal
     // All types now use items[] structure
     let specsOriginal = [];
-    if (rfq.lineOfBusiness?.type === 'karoseri') {
+    if (rfq.lineOfBusiness?.type === 'karoseri' || rfq.lineOfBusiness?.type === 'non_karoseri') {
       // For karoseri, snapshot only the fields visible in diff checker
       specsOriginal = (rfq.items || []).map(item => ({
         itemNumber: item.itemNumber,
