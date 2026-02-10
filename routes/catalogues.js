@@ -2,7 +2,7 @@ const express = require('express');
 const mongoose = require('mongoose');
 const router = express.Router();
 const { authenticateToken, authorize } = require('../middleware/auth');
-const { validateSession } = require('../middleware/sessionAuth');
+const { validateSession, validateSessionOrAuthorize } = require('../middleware/sessionAuth');
 const catalogueHelper = require('../utils/catalogueHelper');
 const { sendSuccessResponse, sendErrorResponse, ERROR_MESSAGES, SUCCESS_MESSAGES } = require('../utils/errorHandler');
 const { sendEmail } = require('../utils/emailConfig');
@@ -12,8 +12,8 @@ const Catalogue = require('../models/catalogue.model');
 const BRAND_COLOR = '#b91c1c';
 const COMPANY_NAME = 'ASB';
 
-// GET /api/catalogues - List catalogues with pagination
-router.get('/', validateSession, async (req, res) => {
+// GET /api/catalogues - List catalogues with pagination (session for catalogue app, JWT for admin)
+router.get('/', validateSessionOrAuthorize(['placeholder_test']), async (req, res) => {
   try {
     const { page = 1, limit = 10, search, bodyType } = req.query;
 
@@ -58,8 +58,8 @@ router.get('/body-type/:bodyTypeId', authenticateToken, authorize(['placeholder_
   }
 });
 
-// GET /api/catalogues/:id - Get catalogue by ID
-router.get('/:id', validateSession, async (req, res) => {
+// GET /api/catalogues/:id - Get catalogue by ID (session for catalogue app, JWT for admin)
+router.get('/:id', validateSessionOrAuthorize(['placeholder_test']), async (req, res) => {
   try {
     const catalogue = await catalogueHelper.getCatalogueById(req.params.id);
     return sendSuccessResponse(res, 200, SUCCESS_MESSAGES.RETRIEVED, catalogue);
