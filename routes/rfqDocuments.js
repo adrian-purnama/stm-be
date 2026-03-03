@@ -106,6 +106,9 @@ router.post('/:rfqId/documents', authenticateToken, upload.single('document'), a
     if (!file) {
       return sendErrorResponse(res, 400, 'Document file is required');
     }
+    if (!file.size || file.size === 0) {
+      return sendErrorResponse(res, 400, 'Document file is empty. Please select a non-empty file.');
+    }
 
     const user = await User.findById(req.user.userId).populate('permissions');
     if (!user) {
@@ -240,8 +243,11 @@ router.get('/documents/:documentId/download', authenticateToken, async (req, res
       ? await gunzip(buffer)
       : buffer;
 
-    res.setHeader('Content-Type', document.file.mimeType || 'application/octet-stream');
-    res.setHeader('Content-Disposition', `attachment; filename="${document.file.originalName}"`);
+    const mimeType = document.file.mimeType || 'application/octet-stream';
+    const originalName = document.file.originalName || 'document';
+    const safeFilename = originalName.replace(/"/g, '%22');
+    res.setHeader('Content-Type', mimeType);
+    res.setHeader('Content-Disposition', `attachment; filename="${safeFilename}"`);
     res.setHeader('Content-Length', outputBuffer.length);
 
     return res.status(200).send(outputBuffer);

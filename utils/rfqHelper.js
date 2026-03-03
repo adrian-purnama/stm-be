@@ -213,7 +213,7 @@ const getRFQById = async (rfqId) => {
       .populate('timeline.user', 'email fullName')
       .populate({
         path: 'documents',
-        select: 'originalName fileId fileCategory fileType uploadedBy createdAt',
+        select: 'file uploadedBy uploadedAt',
         populate: {
           path: 'uploadedBy',
           select: 'fullName email'
@@ -266,7 +266,7 @@ const getRFQs = async (filters = {}, options = {}) => {
       .populate('engineeringTransit.reviewedBy', 'email fullName')
       .populate({
         path: 'documents',
-        select: 'originalName fileId fileCategory fileType uploadedBy createdAt',
+        select: 'file uploadedBy uploadedAt',
         populate: {
           path: 'uploadedBy',
           select: 'fullName email'
