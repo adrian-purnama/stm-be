@@ -1108,6 +1108,9 @@ const getQuotations = async (filters = {}, pagination = { page: 1, limit: 10 }, 
       headerQuery['lineOfBusiness.type'] = filters['lineOfBusiness.type'];
     }
   }
+  if (filters.rfqId) {
+    headerQuery.rfqId = filters.rfqId;
+  }
   if (filters.startDate || filters.endDate) {
     headerQuery.createdAt = {};
     if (filters.startDate) {

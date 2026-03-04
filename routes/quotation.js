@@ -55,8 +55,6 @@ router.get('/', authenticateToken, authorize(['quotation_view']), async (req, re
     delete rawFilters.filterMode;
     delete rawFilters.lightweight;
 
-    const filters = rawFilters;
-    
     // Get user with permissions (optimized with lean and field selection)
     const user = await require('../models/user.model').findById(req.user.userId)
       .select('permissions')
@@ -64,41 +62,7 @@ router.get('/', authenticateToken, authorize(['quotation_view']), async (req, re
       .lean();
     const userPermissions = (user?.permissions || []).map(p => p.name || p);
     
-    let userFilters = { ...filters };
-    
-    // Handle array filters from advanced filters (status, lineOfBusiness)
-    if (filters.status) {
-      if (Array.isArray(filters.status)) {
-        userFilters.status = filters.status.length === 1 ? filters.status[0] : { $in: filters.status };
-      } else {
-        userFilters.status = filters.status;
-      }
-    }
-    if (filters.lineOfBusiness) {
-      if (Array.isArray(filters.lineOfBusiness)) {
-        userFilters['lineOfBusiness.type'] = filters.lineOfBusiness.length === 1 ? filters.lineOfBusiness[0] : { $in: filters.lineOfBusiness };
-      } else {
-        userFilters['lineOfBusiness.type'] = filters.lineOfBusiness;
-      }
-    }
-    
-    // Handle bodyType filter from dropdown
-    if (filters.bodyType) {
-      const BodyType = require('../models/bodyType.model');
-      const bodyType = await BodyType.findById(filters.bodyType).select('_id').lean();
-      if (bodyType) {
-        userFilters.bodyTypeId = bodyType._id;
-      }
-    }
-    
-    // Handle chassisType filter from dropdown
-    if (filters.chassisType) {
-      const ChassisType = require('../models/chassisType.model');
-      const chassisType = await ChassisType.findById(filters.chassisType).select('_id').lean();
-      if (chassisType) {
-        userFilters.chassisTypeId = chassisType._id;
-      }
-    }
+    let userFilters = {};
     
     // Apply role-based filtering based on filterMode
     if (filterMode === 'my_quotations') {
@@ -137,21 +101,35 @@ router.get('/', authenticateToken, authorize(['quotation_view']), async (req, re
       // No additional filtering needed for admin users
     }
     
-    // Simple quotation number search - bare bones (apply AFTER other filters)
-    if (search && search.trim()) {
-      const searchTerm = search.trim();
-      // Escape special regex characters and search for quotation number
-      const escapedPattern = searchTerm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      // Use case-insensitive regex search
-      // If $and already exists, add quotationNumber to it, otherwise set it directly
+    // Direct filters: quotation number, status, customer (else-if style, reliable)
+    const searchTrimmed = search && typeof search === 'string' ? search.trim() : '';
+    const statusParam = rawFilters.status;
+    const customerParam = rawFilters.customer && typeof rawFilters.customer === 'string' ? rawFilters.customer.trim() : '';
+    
+    if (searchTrimmed) {
+      const escaped = searchTrimmed.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       if (userFilters.$and && userFilters.$and.length > 0) {
-        userFilters.$and.push({ quotationNumber: { $regex: escapedPattern, $options: 'i' } });
-        console.log('[Search] Applied quotation number search to $and array. FilterMode:', filterMode, 'Search:', searchTerm);
+        userFilters.$and.push({ quotationNumber: { $regex: escaped, $options: 'i' } });
       } else {
-        userFilters.quotationNumber = { $regex: escapedPattern, $options: 'i' };
-        console.log('[Search] Applied quotation number search directly. FilterMode:', filterMode, 'Search:', searchTerm);
+        userFilters.quotationNumber = { $regex: escaped, $options: 'i' };
       }
-      console.log('[Search] Applied quotation number search:', searchTerm, 'Pattern:', escapedPattern);
+    } else if (statusParam) {
+      const statuses = Array.isArray(statusParam) ? statusParam : [statusParam];
+      const valid = statuses.filter(s => ['open', 'loss', 'win', 'close'].includes(s));
+      if (valid.length === 1) {
+        userFilters['status.type'] = valid[0];
+      } else if (valid.length > 1) {
+        userFilters['status.type'] = { $in: valid };
+      }
+    } else if (customerParam) {
+      const { RFQ } = require('../models/rfq.model');
+      const escaped = customerParam.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const rfqIds = await RFQ.find({ customerName: { $regex: escaped, $options: 'i' } }).distinct('_id');
+      if (rfqIds.length === 0) {
+        userFilters.rfqId = { $in: [] };
+      } else {
+        userFilters.rfqId = { $in: rfqIds };
+      }
     }
     
     console.log('[Search] Final userFilters:', JSON.stringify(userFilters, null, 2));
@@ -256,6 +234,7 @@ router.get('/', authenticateToken, authorize(['quotation_view']), async (req, re
         lastFollowUpDate: quotation.header.lastFollowUpDate,
         followUpStatus: quotation.header.followUpStatus,
         marketingName: quotation.header.marketingName,
+        manager_notes: quotation.header.manager_notes,
         createdAt: quotation.header.createdAt,
         updatedAt: quotation.header.updatedAt
       },
@@ -330,52 +309,28 @@ router.get('/all', authenticateToken, authorize(['all_quotation_viewer']), async
       return sendErrorResponse(res, 403, 'Access denied. all_quotation_viewer permission required to view all quotations.');
     }
     
-    // Build user filters
-    let userFilters = { ...filters };
+    // Direct filters: quotation number, status, customer (else-if style, same as GET /)
+    let userFilters = {};
+    const searchTrimmed = search && typeof search === 'string' ? search.trim() : '';
+    const statusParam = filters.status;
+    const customerParam = filters.customer && typeof filters.customer === 'string' ? filters.customer.trim() : '';
     
-    // Handle array filters from advanced filters (status, lineOfBusiness)
-    if (filters.status) {
-      if (Array.isArray(filters.status)) {
-        userFilters.status = filters.status.length === 1 ? filters.status[0] : { $in: filters.status };
-      } else {
-        userFilters.status = filters.status;
+    if (searchTrimmed) {
+      const escaped = searchTrimmed.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      userFilters.quotationNumber = { $regex: escaped, $options: 'i' };
+    } else if (statusParam) {
+      const statuses = Array.isArray(statusParam) ? statusParam : [statusParam];
+      const valid = statuses.filter(s => ['open', 'loss', 'win', 'close'].includes(s));
+      if (valid.length === 1) {
+        userFilters['status.type'] = valid[0];
+      } else if (valid.length > 1) {
+        userFilters['status.type'] = { $in: valid };
       }
-    }
-    if (filters.lineOfBusiness) {
-      if (Array.isArray(filters.lineOfBusiness)) {
-        userFilters['lineOfBusiness.type'] = filters.lineOfBusiness.length === 1 ? filters.lineOfBusiness[0] : { $in: filters.lineOfBusiness };
-      } else {
-        userFilters['lineOfBusiness.type'] = filters.lineOfBusiness;
-      }
-    }
-    
-    // Handle bodyType filter from dropdown
-    if (filters.bodyType) {
-      const BodyType = require('../models/bodyType.model');
-      const bodyType = await BodyType.findById(filters.bodyType).select('_id').lean();
-      if (bodyType) {
-        userFilters.bodyTypeId = bodyType._id;
-      }
-    }
-    
-    // Handle chassisType filter from dropdown
-    if (filters.chassisType) {
-      const ChassisType = require('../models/chassisType.model');
-      const chassisType = await ChassisType.findById(filters.chassisType).select('_id').lean();
-      if (chassisType) {
-        userFilters.chassisTypeId = chassisType._id;
-      }
-    }
-    
-    // Simple quotation number search - bare bones (apply AFTER other filters)
-    if (search && search.trim()) {
-      const searchTerm = search.trim();
-      // Escape special regex characters and search for quotation number
-      const escapedPattern = searchTerm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      // Use case-insensitive regex search
-      // Since filterMode is all_viewer, no $and array exists, so set it directly
-      userFilters.quotationNumber = { $regex: escapedPattern, $options: 'i' };
-      console.log('[Search /all] Applied quotation number search:', searchTerm, 'Pattern:', escapedPattern);
+    } else if (customerParam) {
+      const { RFQ } = require('../models/rfq.model');
+      const escaped = customerParam.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const rfqIds = await RFQ.find({ customerName: { $regex: escaped, $options: 'i' } }).distinct('_id');
+      userFilters.rfqId = rfqIds.length === 0 ? { $in: [] } : { $in: rfqIds };
     }
     
     console.log('[Search /all] Final userFilters:', JSON.stringify(userFilters, null, 2));
@@ -414,6 +369,7 @@ router.get('/all', authenticateToken, authorize(['all_quotation_viewer']), async
         lastFollowUpDate: quotation.header.lastFollowUpDate,
         followUpStatus: quotation.header.followUpStatus,
         marketingName: quotation.header.marketingName,
+        manager_notes: quotation.header.manager_notes,
         createdAt: quotation.header.createdAt,
         updatedAt: quotation.header.updatedAt
       },
@@ -841,7 +797,7 @@ router.get('/:quotationNumber/header', authenticateToken, authorize(['quotation_
     const QuotationHeader = require('../models/quotationHeader.model');
     
     const header = await QuotationHeader.findOne({ quotationNumber })
-      .select('quotationNumber requesterId approverId creatorId marketingName rfqId customerName contactPerson lineOfBusiness status winSubStatus ocSequenceNumber ocNumber spkSequenceNumber spkCode spkNumber selectedOfferId selectedOfferItemIds lastFollowUpDate progress downloads createdAt updatedAt')
+      .select('quotationNumber requesterId approverId creatorId marketingName rfqId customerName contactPerson lineOfBusiness status winSubStatus ocSequenceNumber ocNumber spkSequenceNumber spkCode spkNumber selectedOfferId selectedOfferItemIds lastFollowUpDate progress downloads manager_notes createdAt updatedAt')
       .populate('requesterId', 'fullName email')
       .populate('approverId', 'fullName email')
       .populate('creatorId', 'fullName email')
@@ -1942,6 +1898,54 @@ router.patch('/:quotationNumber/follow-up', authenticateToken, authorize(['quota
   } catch (error) {
     console.error('Error updating follow-up:', error);
     return sendErrorResponse(res, 400, 'Failed to update follow-up', error.message);
+  }
+});
+
+// Update manager notes (download approver only)
+router.patch('/:quotationNumber/manager-notes', authenticateToken, authorize(['quotation_download_approver']), async (req, res) => {
+  console.log('[manager-notes] PATCH received', { rawParam: req.params.quotationNumber, bodyKeys: req.body ? Object.keys(req.body) : [] });
+  try {
+    const quotationNumber = decodeURIComponent(req.params.quotationNumber);
+    const manager_notes = req.body && (req.body.manager_notes !== undefined)
+      ? String(req.body.manager_notes || '').trim()
+      : '';
+    console.log('[manager-notes] Parsed', { quotationNumber, manager_notesLength: manager_notes.length, manager_notesPreview: manager_notes.slice(0, 50) });
+
+    const result = await getQuotationOffers(quotationNumber);
+    console.log('[manager-notes] getQuotationOffers', { hasResult: !!result, hasHeader: !!result?.header, headerId: result?.header?._id?.toString() });
+    if (!result || !result.header) {
+      console.log('[manager-notes] Abort: quotation not found');
+      return sendErrorResponse(res, 404, 'Quotation not found');
+    }
+
+    const headerId = result.header._id;
+    console.log('[manager-notes] Calling native collection.updateOne', { headerId: headerId.toString(), manager_notesLength: manager_notes.length });
+    // Use native MongoDB collection so the update is not filtered by Mongoose schema (avoids stale schema omitting manager_notes)
+    const updateResult = await QuotationHeader.collection.updateOne(
+      { _id: headerId },
+      { $set: { manager_notes } }
+    );
+    console.log('[manager-notes] updateOne result', { matchedCount: updateResult.matchedCount, modifiedCount: updateResult.modifiedCount });
+
+    if (updateResult.matchedCount === 0) {
+      console.log('[manager-notes] Abort: no document matched');
+      return sendErrorResponse(res, 404, 'Quotation header not found');
+    }
+
+    const updatedDoc = await QuotationHeader.collection.findOne({ _id: headerId });
+    const docKeys = updatedDoc ? Object.keys(updatedDoc) : [];
+    console.log('[manager-notes] collection.findOne', { hasDoc: !!updatedDoc, docKeys, hasManagerNotes: updatedDoc && 'manager_notes' in updatedDoc, manager_notesValue: updatedDoc?.manager_notes });
+    const savedNotes = (updatedDoc && updatedDoc.manager_notes != null) ? String(updatedDoc.manager_notes) : '';
+
+    const payload = {
+      quotationNumber: updatedDoc?.quotationNumber ?? quotationNumber,
+      manager_notes: savedNotes
+    };
+    console.log('[manager-notes] Sending success', payload);
+    return sendSuccessResponse(res, 200, 'Manager notes updated successfully', payload);
+  } catch (error) {
+    console.error('[manager-notes] Error:', error.message, error.stack);
+    return sendErrorResponse(res, 500, error.message || 'Failed to update manager notes');
   }
 });
 
