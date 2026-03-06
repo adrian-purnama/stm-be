@@ -1902,8 +1902,8 @@ router.patch('/:quotationNumber/follow-up', authenticateToken, authorize(['quota
 });
 
 // Update manager notes (download approver only)
-router.patch('/:quotationNumber/manager-notes', authenticateToken, authorize(['quotation_download_approver']), async (req, res) => {
-  console.log('[manager-notes] PATCH received', { rawParam: req.params.quotationNumber, bodyKeys: req.body ? Object.keys(req.body) : [] });
+router.post('/:quotationNumber/manager-notes', authenticateToken, authorize(['quotation_download_approver']), async (req, res) => {
+  console.log('[manager-notes] POST received', { rawParam: req.params.quotationNumber, bodyKeys: req.body ? Object.keys(req.body) : [] });
   try {
     const quotationNumber = decodeURIComponent(req.params.quotationNumber);
     const manager_notes = req.body && (req.body.manager_notes !== undefined)
