@@ -10,7 +10,7 @@ const { setupNotificationWebsocket } = require('./websocket/notificationWebsocke
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// --- CORS: single place, explicit allowlist, no conflict ---
+// --- CORS: explicit allowlist. UAT frontend must be allowed for preflight. ---
 const ALLOWED_ORIGINS = [
   'https://uat-stm-portal.stm-asb.co.id',
   'https://stm-portal.stm-asb.co.id',
@@ -27,23 +27,32 @@ if (process.env.CATALOGUE_URL && !ALLOWED_ORIGINS.includes(process.env.CATALOGUE
   ALLOWED_ORIGINS.push(process.env.CATALOGUE_URL);
 }
 
-function corsMiddleware(req, res, next) {
-  const origin = req.headers.origin;
-  const allowOrigin = origin && ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0];
-  res.setHeader('Access-Control-Allow-Origin', allowOrigin);
-  res.setHeader('Access-Control-Allow-Credentials', 'true');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept');
-  res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
-  res.setHeader('Access-Control-Max-Age', '86400');
+const CORS_HEADERS = {
+  'Access-Control-Allow-Credentials': 'true',
+  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, PATCH, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With, Accept',
+  'Access-Control-Expose-Headers': 'Content-Disposition',
+  'Access-Control-Max-Age': '86400'
+};
 
-  if (req.method === 'OPTIONS') {
-    return res.status(200).end();
-  }
-  next();
+function getCorsOrigin(req) {
+  const origin = req.headers.origin;
+  return (origin && ALLOWED_ORIGINS.includes(origin)) ? origin : ALLOWED_ORIGINS[0];
 }
 
-app.use(corsMiddleware);
+// 1) Handle OPTIONS first so preflight always gets CORS (no auth, no body parsing)
+app.options('*', (req, res) => {
+  const headers = { ...CORS_HEADERS, 'Access-Control-Allow-Origin': getCorsOrigin(req) };
+  res.writeHead(200, headers);
+  res.end();
+});
+
+// 2) Set CORS on every other request and continue
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', getCorsOrigin(req));
+  Object.entries(CORS_HEADERS).forEach(([k, v]) => res.setHeader(k, v));
+  next();
+});
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
