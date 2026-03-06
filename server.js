@@ -34,20 +34,21 @@ const corsOptions = {
   preflightContinue: false
 };
 
-// CRITICAL: Handle OPTIONS requests FIRST, before any other middleware
+// CRITICAL: Handle OPTIONS (preflight) and CORS FIRST so browser always gets headers.
+// If you see "No 'Access-Control-Allow-Origin' header" on UAT/production, the OPTIONS
+// request may not be reaching this app (e.g. reverse proxy responds to OPTIONS first).
+// Fix: configure the proxy to forward OPTIONS to Node, or add CORS headers in the proxy.
 app.use((req, res, next) => {
-  // Set CORS headers for ALL requests (including OPTIONS)
   const origin = req.headers.origin || '*';
   res.header('Access-Control-Allow-Origin', origin);
   res.header('Access-Control-Allow-Credentials', 'true');
   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept');
   res.header('Access-Control-Expose-Headers', 'Content-Disposition');
-  
-  // Handle OPTIONS preflight requests immediately
+
   if (req.method === 'OPTIONS') {
-    res.header('Access-Control-Max-Age', '86400'); // 24 hours
-    return res.status(200).end();
+    res.header('Access-Control-Max-Age', '86400');
+    return res.status(204).end();
   }
   next();
 });
