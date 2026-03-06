@@ -1909,16 +1909,17 @@ const bodyTokenToAuth = (req, res, next) => {
   next();
 };
 
-// Update manager notes (download approver only)
-router.post('/:quotationNumber/manager-notes', bodyTokenToAuth, authenticateToken, authorize(['quotation_download_approver']), async (req, res) => {
-  console.log('[manager-notes] POST received', { rawParam: req.params.quotationNumber, bodyKeys: req.body ? Object.keys(req.body) : [] });
+async function updateManagerNotesHandler(req, res) {
+  const quotationNumber = req.body && req.body.quotationNumber != null
+    ? String(req.body.quotationNumber).trim()
+    : (req.params.quotationNumber ? decodeURIComponent(req.params.quotationNumber) : '');
+  const manager_notes = req.body && (req.body.manager_notes !== undefined)
+    ? String(req.body.manager_notes || '').trim()
+    : '';
+  if (!quotationNumber) {
+    return sendErrorResponse(res, 400, 'quotationNumber is required');
+  }
   try {
-    const quotationNumber = decodeURIComponent(req.params.quotationNumber);
-    const manager_notes = req.body && (req.body.manager_notes !== undefined)
-      ? String(req.body.manager_notes || '').trim()
-      : '';
-    console.log('[manager-notes] Parsed', { quotationNumber, manager_notesLength: manager_notes.length, manager_notesPreview: manager_notes.slice(0, 50) });
-
     const result = await getQuotationOffers(quotationNumber);
     console.log('[manager-notes] getQuotationOffers', { hasResult: !!result, hasHeader: !!result?.header, headerId: result?.header?._id?.toString() });
     if (!result || !result.header) {
@@ -1955,7 +1956,13 @@ router.post('/:quotationNumber/manager-notes', bodyTokenToAuth, authenticateToke
     console.error('[manager-notes] Error:', error.message, error.stack);
     return sendErrorResponse(res, 500, error.message || 'Failed to update manager notes');
   }
-});
+}
+
+// Flat path (no encoded slashes) – use this from frontend when proxy chokes on /1/QUO/STM/III/2026/manager-notes
+router.post('/manager-notes', bodyTokenToAuth, authenticateToken, authorize(['quotation_download_approver']), updateManagerNotesHandler);
+
+// Path with quotation number (kept for backward compatibility)
+router.post('/:quotationNumber/manager-notes', bodyTokenToAuth, authenticateToken, authorize(['quotation_download_approver']), updateManagerNotesHandler);
 
 // Track quotation download
 router.patch('/:quotationNumber/track-download', authenticateToken, async (req, res) => {
