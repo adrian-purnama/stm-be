@@ -1901,8 +1901,16 @@ router.patch('/:quotationNumber/follow-up', authenticateToken, authorize(['quota
   }
 });
 
+// Allow token in body for manager-notes (avoids CORS preflight when proxy blocks OPTIONS)
+const bodyTokenToAuth = (req, res, next) => {
+  if (req.body && req.body.token && !req.headers.authorization) {
+    req.headers.authorization = `Bearer ${req.body.token}`;
+  }
+  next();
+};
+
 // Update manager notes (download approver only)
-router.post('/:quotationNumber/manager-notes', authenticateToken, authorize(['quotation_download_approver']), async (req, res) => {
+router.post('/:quotationNumber/manager-notes', bodyTokenToAuth, authenticateToken, authorize(['quotation_download_approver']), async (req, res) => {
   console.log('[manager-notes] POST received', { rawParam: req.params.quotationNumber, bodyKeys: req.body ? Object.keys(req.body) : [] });
   try {
     const quotationNumber = decodeURIComponent(req.params.quotationNumber);
