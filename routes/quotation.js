@@ -7,6 +7,7 @@
 const express = require('express');
 const router = express.Router();
 const { authenticateToken, authorize } = require('../middleware/auth');
+const { addNotification } = require('../utils/notificationHelper');
 const QuotationHeader = require('../models/quotationHeader.model');
 const QuotationOffer = require('../models/quotationOffer.model');
 const OfferItem = require('../models/offerItem.model');
@@ -1945,6 +1946,27 @@ async function updateManagerNotesHandler(req, res) {
     const docKeys = updatedDoc ? Object.keys(updatedDoc) : [];
     console.log('[manager-notes] collection.findOne', { hasDoc: !!updatedDoc, docKeys, hasManagerNotes: updatedDoc && 'manager_notes' in updatedDoc, manager_notesValue: updatedDoc?.manager_notes });
     const savedNotes = (updatedDoc && updatedDoc.manager_notes != null) ? String(updatedDoc.manager_notes) : '';
+
+    // Send notification to quotation creator (not the manager)
+    try {
+      const creatorField = result.header.creatorId;
+      const creatorId =
+        creatorField && typeof creatorField === 'object' && creatorField._id
+          ? creatorField._id
+          : creatorField;
+      if (creatorId) {
+        await addNotification({
+          userId: creatorId,
+          title: 'Manager notes added',
+          description: `Manager has added notes on quotation ${quotationNumber}.`,
+          path: '/quotations'
+        });
+      } else {
+        console.warn('[manager-notes] No creatorId found for header, skipping notification');
+      }
+    } catch (notifErr) {
+      console.error('[manager-notes] Failed to send creator notification:', notifErr);
+    }
 
     const payload = {
       quotationNumber: updatedDoc?.quotationNumber ?? quotationNumber,

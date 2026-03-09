@@ -797,6 +797,22 @@ const generateSpecificationTableXML = (specifications, drawingInfo = null, price
   return tableXML;
 };
 
+// Flatten category-based specifications to array of strings for display (e.g. sparepart / non_karoseri)
+const flattenSpecificationsToDetails = (specifications) => {
+  if (!specifications || !Array.isArray(specifications)) return [];
+  const lines = [];
+  specifications.forEach((spec) => {
+    const category = spec.category || '';
+    (spec.items || []).forEach((it) => {
+      const name = it.name || '';
+      const specVal = it.specification || '';
+      const line = [category, name, specVal].filter(Boolean).join(': ');
+      if (line) lines.push(line);
+    });
+  });
+  return lines;
+};
+
 // Generate service specification table XML for Word document
 const generatePricingTableXML = (offerItems = [], lineOfBusinessType = 'service') => {
   if (!offerItems || offerItems.length === 0) {
@@ -817,9 +833,17 @@ const generatePricingTableXML = (offerItems = [], lineOfBusinessType = 'service'
     const name = isService
       ? item.serviceName || `Service ${index + 1}`
       : item.sparepartName || `Sparepart ${index + 1}`;
-    const details = isService && Array.isArray(item.serviceDetails)
-      ? item.serviceDetails.map((detail) => escapeXml(detail || '')).filter(Boolean)
-      : [];
+    let details = [];
+    if (isService && Array.isArray(item.serviceDetails)) {
+      details = item.serviceDetails.map((detail) => escapeXml(detail || '')).filter(Boolean);
+    } else if (!isService) {
+      // Sparepart: show notes and/or flattened specifications
+      if (item.notes && String(item.notes).trim()) {
+        details.push(escapeXml(item.notes.trim()));
+      }
+      const specLines = flattenSpecificationsToDetails(item.specifications);
+      specLines.forEach((line) => details.push(escapeXml(line)));
+    }
 
     return {
       no: index + 1,
@@ -940,7 +964,7 @@ const generatePricingTableXML = (offerItems = [], lineOfBusinessType = 'service'
   return tableXML;
 };
 
-// Build item text for template - supports karoseri, service, and sparepart
+// Build item text for template - supports karoseri, service, sparepart, and non_karoseri (service + sparepart)
 // Returns both the item text and a map of table placeholders to table XML
 const buildItemText = (offerItems, lineOfBusinessType = 'karoseri', drawingNumberMap = {}, offerContext = {}) => {
   if (!offerItems || offerItems.length === 0) {
@@ -951,7 +975,23 @@ const buildItemText = (offerItems, lineOfBusinessType = 'karoseri', drawingNumbe
   const tableMap = {};
   const financialAggregate = aggregateOfferFinancials(offerItems);
 
-  if (lineOfBusinessType === 'service' || lineOfBusinessType === 'sparepart') {
+  if (lineOfBusinessType === 'non_karoseri') {
+    // Non-karoseri: service items (have serviceName) vs rest (sparepart / spec-only). Include ALL non-service in sparepart table so specs render.
+    const serviceItems = offerItems.filter((i) => i.serviceName && String(i.serviceName).trim());
+    const sparepartItems = offerItems.filter((i) => !(i.serviceName && String(i.serviceName).trim()));
+    const serviceTable = serviceItems.length ? generatePricingTableXML(serviceItems, 'service') : '';
+    const sparepartTable = sparepartItems.length ? generatePricingTableXML(sparepartItems, 'sparepart') : '';
+    if (serviceTable || sparepartTable) {
+      const placeholder = '[ITEM_PRICING_TABLE]';
+      if (serviceItems.length) itemText += 'Daftar Layanan:\n';
+      if (sparepartItems.length) itemText += 'Daftar Sparepart:\n';
+      itemText += `${placeholder}\n\n`;
+      const spacingBetween = serviceTable && sparepartTable
+        ? '<w:p><w:pPr><w:spacing w:after="200"/></w:pPr></w:p>'
+        : '';
+      tableMap[placeholder] = (serviceTable || '') + spacingBetween + (sparepartTable || '');
+    }
+  } else if (lineOfBusinessType === 'service' || lineOfBusinessType === 'sparepart') {
     const pricingTable = generatePricingTableXML(offerItems, lineOfBusinessType);
     if (pricingTable) {
       const placeholder = '[ITEM_PRICING_TABLE]';
@@ -1367,8 +1407,16 @@ const prepareQuotationData = async (header, offer, selectedNotes = [], drawingsI
 
   const rfqContext = rfq || {};
 
-  // Get line of business type
-  const lineOfBusinessType = rfqContext.lineOfBusiness?.type || header.lineOfBusiness?.type || 'karoseri';
+  // Get line of business type (explicit from RFQ/header, or infer from items when missing)
+  let lineOfBusinessType = rfqContext.lineOfBusiness?.type || header.lineOfBusiness?.type || null;
+  if (!lineOfBusinessType && offer.offerItems && offer.offerItems.length > 0) {
+    const hasKaroseri = offer.offerItems.some((i) => i.karoseri && String(i.karoseri).trim());
+    const hasNonKaroseri = offer.offerItems.some(
+      (i) => (i.serviceName && String(i.serviceName).trim()) || (i.sparepartName && String(i.sparepartName).trim()) || (i.specifications && i.specifications.length > 0)
+    );
+    if (hasNonKaroseri && !hasKaroseri) lineOfBusinessType = 'non_karoseri';
+  }
+  lineOfBusinessType = lineOfBusinessType || 'karoseri';
 
   // Build item text and get table map
   const { itemText, tableMap } = buildItemText(
