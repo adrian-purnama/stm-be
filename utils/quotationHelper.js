@@ -20,6 +20,15 @@ const withTimeout = (promise, timeoutMs, fallback) => {
 
 // Generate quotation number
 const generateQuotationNumber = async () => {
+  const startedAt = Date.now();
+  const logStep = (message, extra = {}) => {
+    console.log('[generateQuotationNumber]', message, {
+      elapsedMs: Date.now() - startedAt,
+      ...extra
+    });
+  };
+
+  logStep('Starting quotation number generation');
   const now = new Date();
   const year = now.getFullYear();
   const month = now.getMonth() + 1; 
@@ -30,21 +39,30 @@ const generateQuotationNumber = async () => {
     7: 'VII', 8: 'VIII', 9: 'IX', 10: 'X', 11: 'XI', 12: 'XII'
   };
   const romanMonth = romanMonths[month];
+  logStep('Resolved current date context', { year, month, romanMonth });
   
   // Find all quotation headers for this month and year
   const startOfMonth = new Date(year, month - 1, 1);
-  const endOfMonth = new Date(year, month, 0);
+  const startOfNextMonth = new Date(year, month, 1);
+  logStep('Starting monthly quotation lookup', { startOfMonth, startOfNextMonth });
   
   const quotationHeaders = await QuotationHeader.find({
     createdAt: {
       $gte: startOfMonth,
-      $lte: endOfMonth
+      $lt: startOfNextMonth
     }
   }, { quotationNumber: 1 });
+  logStep('Finished monthly quotation lookup', {
+    totalHeadersFound: quotationHeaders.length,
+    quotationNumbers: quotationHeaders.map(header => header.quotationNumber).filter(Boolean)
+  });
 
   // Extract the highest number from existing quotation numbers for this month
   let highestNumber = 0;
   const quotationPattern = new RegExp(`^(\\d+)/QUO/STM/${romanMonth}/${year}$`);
+  logStep('Scanning existing quotation numbers', {
+    pattern: quotationPattern.toString()
+  });
   
   quotationHeaders.forEach(header => {
     if (header.quotationNumber) {
@@ -57,18 +75,29 @@ const generateQuotationNumber = async () => {
       }
     }
   });
+  logStep('Finished scanning quotation numbers', { highestNumber });
 
   const nextNumber = highestNumber + 1;
   const quotationNumber = `${nextNumber}/QUO/STM/${romanMonth}/${year}`;
+  logStep('Generated next quotation number candidate', { quotationNumber });
   
   
   // Double-check that this number doesn't already exist (race condition protection)
+  logStep('Starting duplicate quotation number check', { quotationNumber });
   const existingHeader = await QuotationHeader.findOne({ quotationNumber });
+  logStep('Finished duplicate quotation number check', {
+    quotationNumber,
+    exists: !!existingHeader
+  });
   if (existingHeader) {
-    // Recursively generate a new number
-    return await generateQuotationNumber();
+    logStep('Duplicate quotation number found, stopping generation for debugging', {
+      existingHeaderId: existingHeader._id?.toString?.() || existingHeader._id,
+      existingHeaderCreatedAt: existingHeader.createdAt || null
+    });
+    throw new Error(`Duplicate quotation number detected during generation: ${quotationNumber}`);
   }
   
+  logStep('Quotation number generation completed', { quotationNumber });
   return quotationNumber;
 };
 
@@ -380,21 +409,72 @@ const getFollowUpStatus = (lastFollowUpDate) => {
 
 // Create quotation header
 const createQuotationHeader = async (headerData) => {
-  // Format data before saving
+  const startedAt = Date.now();
+  const logStep = (message, extra = {}) => {
+    console.log('[createQuotationHeader]', message, {
+      elapsedMs: Date.now() - startedAt,
+      mongooseReadyState: mongoose.connection.readyState,
+      ...extra
+    });
+  };
+
+  logStep('Starting createQuotationHeader', {
+    headerDataKeys: Object.keys(headerData || {}),
+    requesterId: headerData?.requesterId?.toString?.() || headerData?.requesterId || null,
+    approverId: headerData?.approverId?.toString?.() || headerData?.approverId || null,
+    creatorId: headerData?.creatorId?.toString?.() || headerData?.creatorId || null,
+    rfqId: headerData?.rfqId || null
+  });
+
+  logStep('Starting formatDataForStorage');
   const formattedData = formatDataForStorage(headerData);
+  logStep('Finished formatDataForStorage', {
+    formattedData: {
+      requesterId: formattedData?.requesterId?.toString?.() || formattedData?.requesterId || null,
+      approverId: formattedData?.approverId?.toString?.() || formattedData?.approverId || null,
+      creatorId: formattedData?.creatorId?.toString?.() || formattedData?.creatorId || null,
+      marketingName: formattedData?.marketingName || null,
+      rfqId: formattedData?.rfqId || null
+    }
+  });
 
-  // Generate quotation number
+  logStep('Starting generateQuotationNumber');
   const quotationNumber = await generateQuotationNumber();
+  logStep('Finished generateQuotationNumber', { quotationNumber });
 
-  // Create quotation header
+  logStep('Instantiating QuotationHeader model');
   const header = new QuotationHeader({
     ...formattedData,
     quotationNumber,
     lastFollowUpDate: new Date() // Set initial follow-up date to now
   });
+  logStep('Instantiated QuotationHeader model', {
+    headerId: header?._id?.toString?.() || header?._id,
+    quotationNumber: header?.quotationNumber
+  });
 
-  await header.save();
-  return header;
+  logStep('Starting header.validateSync');
+  const validationError = header.validateSync();
+  if (validationError) {
+    console.error('[createQuotationHeader] Validation failed before save', {
+      elapsedMs: Date.now() - startedAt,
+      errorMessage: validationError.message,
+      errors: Object.keys(validationError.errors || {})
+    });
+    throw validationError;
+  }
+  logStep('Finished header.validateSync without errors');
+
+  logStep('Starting header.save');
+  const savedHeader = await header.save();
+  logStep('Finished header.save', {
+    headerId: savedHeader?._id?.toString?.() || savedHeader?._id,
+    quotationNumber: savedHeader?.quotationNumber,
+    createdAt: savedHeader?.createdAt || null
+  });
+
+  logStep('createQuotationHeader completed successfully');
+  return savedHeader;
 };
 
 // Create quotation offer

@@ -577,24 +577,51 @@ router.get('/debug/offer-items', authenticateToken, authorize(['quotation_view']
  */
 router.post('/', authenticateToken, authorize(['quotation_create']), async (req, res) => {
   try {
+    const requestStartedAt = Date.now();
+    const logStep = (message, extra = {}) => {
+      console.log('[quotation:create]', message, {
+        elapsedMs: Date.now() - requestStartedAt,
+        userId: req.user?.userId,
+        rfqId: req.body?.rfqId || null,
+        ...extra
+      });
+    };
+
     const { headerData, offerData, rfqId } = req.body;
+    logStep('Request received', {
+      hasHeaderData: !!headerData,
+      hasOfferData: !!offerData,
+      offerItemsCount: offerData?.offerItems?.length || 0
+    });
     
     // If rfqId is provided, validate and update RFQ status
     if (rfqId) {
+      logStep('Starting RFQ validation lookup');
       const { RFQ } = require('../models/rfq.model');
       const rfq = await RFQ.findById(rfqId);
+      logStep('Finished RFQ validation lookup', {
+        found: !!rfq,
+        status: rfq?.status
+      });
       
       if (!rfq) {
+        logStep('Stopping because RFQ was not found');
         return sendErrorResponse(res, 404, 'RFQ not found');
       }
       
       if (rfq.status !== 'approved') {
+        logStep('Stopping because RFQ is not approved', { status: rfq.status });
         return sendErrorResponse(res, 400, 'RFQ must be approved before creating quotation');
       }
       
       if (rfq.quotationCreatorId.toString() !== req.user.userId.toString()) {
+        logStep('Stopping because quotation creator does not match RFQ assignee', {
+          quotationCreatorId: rfq.quotationCreatorId?.toString()
+        });
         return sendErrorResponse(res, 403, 'You are not authorized to create quotation for this RFQ');
       }
+
+      logStep('RFQ validation passed');
     }
     
     // If RFQ was provided, get RFQ data and transfer it to offerData
@@ -603,7 +630,13 @@ router.post('/', authenticateToken, authorize(['quotation_create']), async (req,
       const { getRFQById } = require('../utils/rfqHelper');
       
       // Get RFQ with populated items (using getRFQById to ensure templateMode is included)
+      logStep('Starting RFQ detail fetch');
       const rfq = await getRFQById(rfqId);
+      logStep('Finished RFQ detail fetch', {
+        found: !!rfq,
+        itemCount: rfq?.items?.length || 0,
+        lineOfBusinessType: rfq?.lineOfBusiness?.type || null
+      });
       
       if (rfq) {
         // Transfer RFQ data to header data
@@ -614,6 +647,7 @@ router.post('/', authenticateToken, authorize(['quotation_create']), async (req,
         // Transfer RFQ items to offer items only if frontend didn't send any
         // This allows users to modify values in the form and have them saved
         if ((!offerData.offerItems || offerData.offerItems.length === 0) && rfq.items && rfq.items.length > 0) {
+          logStep('Mapping RFQ items into offer items', { itemCount: rfq.items.length });
           const rfqOfferItems = rfq.items.map((rfqItem, index) => {
             const itemEstimatedRevenue = rfqItem.estimatedRevenue || 0;
             const lineOfBusinessType = rfq.lineOfBusiness.type;
@@ -662,11 +696,20 @@ router.post('/', authenticateToken, authorize(['quotation_create']), async (req,
           
           // Only use RFQ items if frontend didn't send any offerItems
           offerData.offerItems = rfqOfferItems;
+          logStep('Mapped RFQ items into offer items', { offerItemsCount: offerData.offerItems.length });
+        } else {
+          logStep('Skipping RFQ item mapping', {
+            existingOfferItemsCount: offerData?.offerItems?.length || 0,
+            rfqItemsCount: rfq.items?.length || 0
+          });
         }
+      } else {
+        logStep('RFQ detail fetch returned no data');
       }
     }
 
     // Prepare user fields for quotation header
+    logStep('Preparing quotation user fields');
     let userFields = {
       requesterId: req.user.userId,
       approverId: req.user.userId, // Default to current user, can be updated later
@@ -677,10 +720,19 @@ router.post('/', authenticateToken, authorize(['quotation_create']), async (req,
     // If RFQ was provided, use RFQ user assignments
     if (rfqId) {
       const { RFQ } = require('../models/rfq.model');
+      logStep('Starting RFQ assignment lookup');
       const rfq = await RFQ.findById(rfqId);
+      logStep('Finished RFQ assignment lookup', { found: !!rfq });
       if (rfq) {
         // Get requester details for marketing name
+        logStep('Starting requester lookup for marketing name', {
+          requesterId: rfq.requesterId?.toString?.() || rfq.requesterId
+        });
         const requester = await User.findById(rfq.requesterId).select('fullName email');
+        logStep('Finished requester lookup for marketing name', {
+          found: !!requester,
+          requesterEmail: requester?.email || null
+        });
         const marketingName = requester?.fullName ? requester.fullName.split(' ')[0] : requester?.email || 'Unknown';
         
         userFields = {
@@ -689,16 +741,26 @@ router.post('/', authenticateToken, authorize(['quotation_create']), async (req,
           creatorId: rfq.quotationCreatorId,
           marketingName: marketingName
         };
+        logStep('Applied RFQ user assignments', userFields);
       }
     }
 
     // Create quotation header
+    logStep('Starting quotation header creation', userFields);
     const header = await createQuotationHeader({
       ...userFields,
       rfqId: rfqId || null
     });
+    logStep('Finished quotation header creation', {
+      quotationNumber: header?.quotationNumber,
+      headerId: header?._id?.toString?.() || header?._id
+    });
 
-      // Create first offer (now with RFQ data if applicable)
+    // Create first offer (now with RFQ data if applicable)
+    logStep('Starting quotation offer creation', {
+      quotationNumber: header?.quotationNumber,
+      offerItemsCount: offerData?.offerItems?.length || 0
+    });
     const offer = await createQuotationOffer(header.quotationNumber, {
         ...offerData,
         requesterId: header.requesterId,
@@ -706,35 +768,53 @@ router.post('/', authenticateToken, authorize(['quotation_create']), async (req,
         creatorId: header.creatorId,
         marketingName: header.marketingName
       });
+    logStep('Finished quotation offer creation', {
+      offerId: offer?._id?.toString?.() || offer?._id
+    });
       
     // If RFQ was provided, update its status
-      if (rfqId) {
-        const { RFQ } = require('../models/rfq.model');
-        
-        // Update RFQ status and link to quotation
-        await RFQ.findByIdAndUpdate(rfqId, {
-          status: 'quotation_created',
-          quotationId: header._id,
-          quotationCreatedAt: new Date()
-        });
+    if (rfqId) {
+      const { RFQ } = require('../models/rfq.model');
+      
+      // Update RFQ status and link to quotation
+      logStep('Starting RFQ status update');
+      await RFQ.findByIdAndUpdate(rfqId, {
+        status: 'quotation_created',
+        quotationId: header._id,
+        quotationCreatedAt: new Date()
+      });
+      logStep('Finished RFQ status update');
     }
 
     // Send email notification to requester (quotation created)
     try {
+      logStep('Starting requester lookup for notification email', {
+        requesterId: header.requesterId?.toString?.() || header.requesterId
+      });
       const requester = await User.findById(header.requesterId).select('email fullName');
+      logStep('Finished requester lookup for notification email', {
+        found: !!requester,
+        requesterEmail: requester?.email || null
+      });
       if (requester && requester.email) {
+        logStep('Sending quotation creation email', { email: requester.email });
         sendQuotationNotificationEmail(
           requester.email,
           header.quotationNumber,
           'created',
           requester.fullName || requester.email
         );
+        logStep('Triggered quotation creation email');
+      } else {
+        logStep('Skipping quotation creation email because requester email is missing');
       }
     } catch (emailError) {
       console.error('Error sending quotation creation email:', emailError);
+      logStep('Notification email step failed', { emailError: emailError.message });
       // Don't fail the request if email fails
     }
 
+    logStep('Starting header RFQ populate');
     await header.populate({
       path: 'rfqId',
       populate: [
@@ -743,10 +823,23 @@ router.post('/', authenticateToken, authorize(['quotation_create']), async (req,
         { path: 'quotationCreatorId', select: 'fullName email' }
       ]
     });
+    logStep('Finished header RFQ populate');
 
+    logStep('Request completed successfully', {
+      quotationNumber: header?.quotationNumber,
+      headerId: header?._id?.toString?.() || header?._id,
+      offerId: offer?._id?.toString?.() || offer?._id
+    });
     return sendSuccessResponse(res, 201, 'Quotation created successfully', { header, rfq: header.rfqId, offer });
   } catch (error) {
     console.error('Error creating quotation:', error);
+    console.error('[quotation:create] Request failed', {
+      elapsedMs: Date.now() - requestStartedAt,
+      userId: req.user?.userId,
+      rfqId: req.body?.rfqId || null,
+      errorMessage: error.message,
+      stack: error.stack
+    });
     return sendErrorResponse(res, 400, 'Failed to create quotation', error.message);
   }
 });
