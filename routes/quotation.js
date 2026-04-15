@@ -650,8 +650,11 @@ router.post('/', authenticateToken, authorize(['quotation_create']), async (req,
                 serviceDetails: rfqItem.serviceDetails || []
               };
             } else if (lineOfBusinessType === 'sparepart') {
+              const unitPrice = Number(rfqItem.pricePerUnit) || 0;
               return {
                 ...baseItem,
+                price: unitPrice,
+                netto: unitPrice * 0.91,
                 sparepartName: rfqItem.sparepartName || '',
                 pricePerUnit: rfqItem.pricePerUnit || 0
               };
