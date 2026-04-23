@@ -4,6 +4,7 @@ const QuotationOffer = require('../models/quotationOffer.model');
 const OfferItem = require('../models/offerItem.model');
 const { RFQ } = require('../models/rfq.model');
 const BodyType = require('../models/bodyType.model');
+const DrawingSpecification = require('../models/drawingSpecification.model');
 
 // Helper function to add timeout to promises
 const withTimeout = (promise, timeoutMs, fallback) => {
@@ -1255,36 +1256,41 @@ const getQuotations = async (filters = {}, pagination = { page: 1, limit: 10 }, 
   
   console.log('[getQuotations] Final headerQuery:', JSON.stringify(headerQuery, null, 2));
   
-  // Handle bodyTypeId, chassisTypeId, and drawingSpecification filters
+  // Handle bodyTypeId, chassisTypeId, sizeTypeId, featureTypeId, and drawingSpecification filters
   // These require joining with offer items, so we'll filter headers by header IDs
   const bodyTypeIdFilter = filters.bodyTypeId;
   const chassisTypeIdFilter = filters.chassisTypeId;
+  const sizeTypeIdFilter = filters.sizeTypeId;
+  const featureTypeIdFilter = filters.featureTypeId;
   const drawingSpecificationFilter = filters.drawingSpecification;
   
   // If filtering by offer-item fields, we need to find quotation headers that have matching offer items
   let matchingHeaderIds = null;
-  if (bodyTypeIdFilter || chassisTypeIdFilter || drawingSpecificationFilter) {
+  if (bodyTypeIdFilter || chassisTypeIdFilter || sizeTypeIdFilter || featureTypeIdFilter || drawingSpecificationFilter) {
     const offerItemQuery = {};
-    if (bodyTypeIdFilter) {
-      if (typeof bodyTypeIdFilter === 'object' && bodyTypeIdFilter.$in) {
-        offerItemQuery.bodyTypeId = bodyTypeIdFilter;
-      } else {
-        offerItemQuery.bodyTypeId = bodyTypeIdFilter;
+
+    // For truck master filters, match via DrawingSpecification relation
+    // so combinations like body+chassis use the same canonical source.
+    const drawingSpecQuery = {};
+    if (bodyTypeIdFilter) drawingSpecQuery.bodyTypeId = bodyTypeIdFilter;
+    if (chassisTypeIdFilter) drawingSpecQuery.chassisTypeId = chassisTypeIdFilter;
+    if (sizeTypeIdFilter) drawingSpecQuery.sizeTypeId = sizeTypeIdFilter;
+    if (featureTypeIdFilter) drawingSpecQuery['features.featureId'] = featureTypeIdFilter;
+    if (drawingSpecificationFilter) drawingSpecQuery._id = drawingSpecificationFilter;
+
+    if (Object.keys(drawingSpecQuery).length > 0) {
+      const drawingSpecIds = await DrawingSpecification.find(drawingSpecQuery).distinct('_id');
+      if (drawingSpecIds.length === 0) {
+        return {
+          quotations: [],
+          pagination: {
+            current: page,
+            pages: 0,
+            total: 0
+          }
+        };
       }
-    }
-    if (chassisTypeIdFilter) {
-      if (typeof chassisTypeIdFilter === 'object' && chassisTypeIdFilter.$in) {
-        offerItemQuery.chassisTypeId = chassisTypeIdFilter;
-      } else {
-        offerItemQuery.chassisTypeId = chassisTypeIdFilter;
-      }
-    }
-    if (drawingSpecificationFilter) {
-      if (typeof drawingSpecificationFilter === 'object' && drawingSpecificationFilter.$in) {
-        offerItemQuery.drawingSpecification = drawingSpecificationFilter;
-      } else {
-        offerItemQuery.drawingSpecification = drawingSpecificationFilter;
-      }
+      offerItemQuery.drawingSpecification = { $in: drawingSpecIds };
     }
     
     // Find all offer items matching the filter

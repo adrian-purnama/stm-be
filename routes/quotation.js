@@ -42,10 +42,18 @@ const DEFAULT_PAYMENT_TERMS = 'Payment DP 50% sisa cash before delivery';
 // Get all quotations for the authenticated user
 router.get('/', authenticateToken, authorize(['quotation_view']), async (req, res) => {
   try {
+    const normalizeIdsParam = (param) => {
+      if (Array.isArray(param)) return param.map((id) => String(id).trim()).filter(Boolean);
+      return param ? [String(param).trim()] : [];
+    };
     const rawFilters = { ...req.query };
     const drawingSpecificationIdsParam = req.query.drawingSpecificationIds
       ?? req.query['drawingSpecificationIds[]']
       ?? req.query.truckType;
+    const bodyTypeIdsParam = req.query.bodyTypeIds ?? req.query['bodyTypeIds[]'] ?? req.query.bodyTypeId;
+    const chassisTypeIdsParam = req.query.chassisTypeIds ?? req.query['chassisTypeIds[]'] ?? req.query.chassisTypeId;
+    const sizeTypeIdsParam = req.query.sizeTypeIds ?? req.query['sizeTypeIds[]'] ?? req.query.sizeTypeId;
+    const featureTypeIdsParam = req.query.featureTypeIds ?? req.query['featureTypeIds[]'] ?? req.query.featureTypeId;
     const search = rawFilters.search || '';
     const page = parseInt(rawFilters.page, 10) || 1;
     const limit = parseInt(rawFilters.limit, 10) || 10;
@@ -61,6 +69,18 @@ router.get('/', authenticateToken, authorize(['quotation_view']), async (req, re
     delete rawFilters.drawingSpecificationIds;
     delete rawFilters['drawingSpecificationIds[]'];
     delete rawFilters.truckType;
+    delete rawFilters.bodyTypeIds;
+    delete rawFilters['bodyTypeIds[]'];
+    delete rawFilters.bodyTypeId;
+    delete rawFilters.chassisTypeIds;
+    delete rawFilters['chassisTypeIds[]'];
+    delete rawFilters.chassisTypeId;
+    delete rawFilters.sizeTypeIds;
+    delete rawFilters['sizeTypeIds[]'];
+    delete rawFilters.sizeTypeId;
+    delete rawFilters.featureTypeIds;
+    delete rawFilters['featureTypeIds[]'];
+    delete rawFilters.featureTypeId;
 
     // Get user with permissions (optimized with lean and field selection)
     const user = await require('../models/user.model').findById(req.user.userId)
@@ -112,9 +132,11 @@ router.get('/', authenticateToken, authorize(['quotation_view']), async (req, re
     const searchTrimmed = search && typeof search === 'string' ? search.trim() : '';
     const statusParam = rawFilters.status;
     const customerParam = rawFilters.customer && typeof rawFilters.customer === 'string' ? rawFilters.customer.trim() : '';
-    const drawingSpecificationIds = Array.isArray(drawingSpecificationIdsParam)
-      ? drawingSpecificationIdsParam.map((id) => String(id).trim()).filter(Boolean)
-      : (drawingSpecificationIdsParam ? [String(drawingSpecificationIdsParam).trim()] : []);
+    const drawingSpecificationIds = normalizeIdsParam(drawingSpecificationIdsParam);
+    const bodyTypeIds = normalizeIdsParam(bodyTypeIdsParam);
+    const chassisTypeIds = normalizeIdsParam(chassisTypeIdsParam);
+    const sizeTypeIds = normalizeIdsParam(sizeTypeIdsParam);
+    const featureTypeIds = normalizeIdsParam(featureTypeIdsParam);
     
     if (searchTrimmed) {
       const escaped = searchTrimmed.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -142,6 +164,20 @@ router.get('/', authenticateToken, authorize(['quotation_view']), async (req, re
       }
     } else if (drawingSpecificationIds.length > 0) {
       userFilters.drawingSpecification = { $in: drawingSpecificationIds };
+    }
+
+    // Additional master filters can be combined together (AND semantics across fields).
+    if (bodyTypeIds.length > 0) {
+      userFilters.bodyTypeId = { $in: bodyTypeIds };
+    }
+    if (chassisTypeIds.length > 0) {
+      userFilters.chassisTypeId = { $in: chassisTypeIds };
+    }
+    if (sizeTypeIds.length > 0) {
+      userFilters.sizeTypeId = { $in: sizeTypeIds };
+    }
+    if (featureTypeIds.length > 0) {
+      userFilters.featureTypeId = { $in: featureTypeIds };
     }
     
     console.log('[Search] Final userFilters:', JSON.stringify(userFilters, null, 2));
@@ -305,9 +341,17 @@ router.get('/', authenticateToken, authorize(['quotation_view']), async (req, re
  */
 router.get('/all', authenticateToken, authorize(['all_quotation_viewer']), async (req, res) => {
   try {
+    const normalizeIdsParam = (param) => {
+      if (Array.isArray(param)) return param.map((id) => String(id).trim()).filter(Boolean);
+      return param ? [String(param).trim()] : [];
+    };
     const drawingSpecificationIdsParam = req.query.drawingSpecificationIds
       ?? req.query['drawingSpecificationIds[]']
       ?? req.query.truckType;
+    const bodyTypeIdsParam = req.query.bodyTypeIds ?? req.query['bodyTypeIds[]'] ?? req.query.bodyTypeId;
+    const chassisTypeIdsParam = req.query.chassisTypeIds ?? req.query['chassisTypeIds[]'] ?? req.query.chassisTypeId;
+    const sizeTypeIdsParam = req.query.sizeTypeIds ?? req.query['sizeTypeIds[]'] ?? req.query.sizeTypeId;
+    const featureTypeIdsParam = req.query.featureTypeIds ?? req.query['featureTypeIds[]'] ?? req.query.featureTypeId;
     const { page = 1, limit = 10, filterMode = 'all_viewer', search, ...filters } = req.query;
     
     // Get user with permissions (optimized with lean and field selection)
@@ -329,9 +373,11 @@ router.get('/all', authenticateToken, authorize(['all_quotation_viewer']), async
     const searchTrimmed = search && typeof search === 'string' ? search.trim() : '';
     const statusParam = filters.status;
     const customerParam = filters.customer && typeof filters.customer === 'string' ? filters.customer.trim() : '';
-    const drawingSpecificationIds = Array.isArray(drawingSpecificationIdsParam)
-      ? drawingSpecificationIdsParam.map((id) => String(id).trim()).filter(Boolean)
-      : (drawingSpecificationIdsParam ? [String(drawingSpecificationIdsParam).trim()] : []);
+    const drawingSpecificationIds = normalizeIdsParam(drawingSpecificationIdsParam);
+    const bodyTypeIds = normalizeIdsParam(bodyTypeIdsParam);
+    const chassisTypeIds = normalizeIdsParam(chassisTypeIdsParam);
+    const sizeTypeIds = normalizeIdsParam(sizeTypeIdsParam);
+    const featureTypeIds = normalizeIdsParam(featureTypeIdsParam);
     
     if (searchTrimmed) {
       const escaped = searchTrimmed.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -351,6 +397,19 @@ router.get('/all', authenticateToken, authorize(['all_quotation_viewer']), async
       userFilters.rfqId = rfqIds.length === 0 ? { $in: [] } : { $in: rfqIds };
     } else if (drawingSpecificationIds.length > 0) {
       userFilters.drawingSpecification = { $in: drawingSpecificationIds };
+    }
+
+    if (bodyTypeIds.length > 0) {
+      userFilters.bodyTypeId = { $in: bodyTypeIds };
+    }
+    if (chassisTypeIds.length > 0) {
+      userFilters.chassisTypeId = { $in: chassisTypeIds };
+    }
+    if (sizeTypeIds.length > 0) {
+      userFilters.sizeTypeId = { $in: sizeTypeIds };
+    }
+    if (featureTypeIds.length > 0) {
+      userFilters.featureTypeId = { $in: featureTypeIds };
     }
     
     console.log('[Search /all] Final userFilters:', JSON.stringify(userFilters, null, 2));
