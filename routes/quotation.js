@@ -43,6 +43,9 @@ const DEFAULT_PAYMENT_TERMS = 'Payment DP 50% sisa cash before delivery';
 router.get('/', authenticateToken, authorize(['quotation_view']), async (req, res) => {
   try {
     const rawFilters = { ...req.query };
+    const drawingSpecificationIdsParam = req.query.drawingSpecificationIds
+      ?? req.query['drawingSpecificationIds[]']
+      ?? req.query.truckType;
     const search = rawFilters.search || '';
     const page = parseInt(rawFilters.page, 10) || 1;
     const limit = parseInt(rawFilters.limit, 10) || 10;
@@ -55,6 +58,9 @@ router.get('/', authenticateToken, authorize(['quotation_view']), async (req, re
     delete rawFilters.limit;
     delete rawFilters.filterMode;
     delete rawFilters.lightweight;
+    delete rawFilters.drawingSpecificationIds;
+    delete rawFilters['drawingSpecificationIds[]'];
+    delete rawFilters.truckType;
 
     // Get user with permissions (optimized with lean and field selection)
     const user = await require('../models/user.model').findById(req.user.userId)
@@ -106,6 +112,9 @@ router.get('/', authenticateToken, authorize(['quotation_view']), async (req, re
     const searchTrimmed = search && typeof search === 'string' ? search.trim() : '';
     const statusParam = rawFilters.status;
     const customerParam = rawFilters.customer && typeof rawFilters.customer === 'string' ? rawFilters.customer.trim() : '';
+    const drawingSpecificationIds = Array.isArray(drawingSpecificationIdsParam)
+      ? drawingSpecificationIdsParam.map((id) => String(id).trim()).filter(Boolean)
+      : (drawingSpecificationIdsParam ? [String(drawingSpecificationIdsParam).trim()] : []);
     
     if (searchTrimmed) {
       const escaped = searchTrimmed.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -131,6 +140,8 @@ router.get('/', authenticateToken, authorize(['quotation_view']), async (req, re
       } else {
         userFilters.rfqId = { $in: rfqIds };
       }
+    } else if (drawingSpecificationIds.length > 0) {
+      userFilters.drawingSpecification = { $in: drawingSpecificationIds };
     }
     
     console.log('[Search] Final userFilters:', JSON.stringify(userFilters, null, 2));
@@ -294,6 +305,9 @@ router.get('/', authenticateToken, authorize(['quotation_view']), async (req, re
  */
 router.get('/all', authenticateToken, authorize(['all_quotation_viewer']), async (req, res) => {
   try {
+    const drawingSpecificationIdsParam = req.query.drawingSpecificationIds
+      ?? req.query['drawingSpecificationIds[]']
+      ?? req.query.truckType;
     const { page = 1, limit = 10, filterMode = 'all_viewer', search, ...filters } = req.query;
     
     // Get user with permissions (optimized with lean and field selection)
@@ -315,6 +329,9 @@ router.get('/all', authenticateToken, authorize(['all_quotation_viewer']), async
     const searchTrimmed = search && typeof search === 'string' ? search.trim() : '';
     const statusParam = filters.status;
     const customerParam = filters.customer && typeof filters.customer === 'string' ? filters.customer.trim() : '';
+    const drawingSpecificationIds = Array.isArray(drawingSpecificationIdsParam)
+      ? drawingSpecificationIdsParam.map((id) => String(id).trim()).filter(Boolean)
+      : (drawingSpecificationIdsParam ? [String(drawingSpecificationIdsParam).trim()] : []);
     
     if (searchTrimmed) {
       const escaped = searchTrimmed.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -332,6 +349,8 @@ router.get('/all', authenticateToken, authorize(['all_quotation_viewer']), async
       const escaped = customerParam.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const rfqIds = await RFQ.find({ customerName: { $regex: escaped, $options: 'i' } }).distinct('_id');
       userFilters.rfqId = rfqIds.length === 0 ? { $in: [] } : { $in: rfqIds };
+    } else if (drawingSpecificationIds.length > 0) {
+      userFilters.drawingSpecification = { $in: drawingSpecificationIds };
     }
     
     console.log('[Search /all] Final userFilters:', JSON.stringify(userFilters, null, 2));

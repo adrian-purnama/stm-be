@@ -1255,14 +1255,15 @@ const getQuotations = async (filters = {}, pagination = { page: 1, limit: 10 }, 
   
   console.log('[getQuotations] Final headerQuery:', JSON.stringify(headerQuery, null, 2));
   
-  // Handle bodyTypeId and chassisTypeId filters
+  // Handle bodyTypeId, chassisTypeId, and drawingSpecification filters
   // These require joining with offer items, so we'll filter headers by header IDs
   const bodyTypeIdFilter = filters.bodyTypeId;
   const chassisTypeIdFilter = filters.chassisTypeId;
+  const drawingSpecificationFilter = filters.drawingSpecification;
   
-  // If filtering by bodyTypeId or chassisTypeId, we need to find quotation headers that have matching offer items
+  // If filtering by offer-item fields, we need to find quotation headers that have matching offer items
   let matchingHeaderIds = null;
-  if (bodyTypeIdFilter || chassisTypeIdFilter) {
+  if (bodyTypeIdFilter || chassisTypeIdFilter || drawingSpecificationFilter) {
     const offerItemQuery = {};
     if (bodyTypeIdFilter) {
       if (typeof bodyTypeIdFilter === 'object' && bodyTypeIdFilter.$in) {
@@ -1276,6 +1277,13 @@ const getQuotations = async (filters = {}, pagination = { page: 1, limit: 10 }, 
         offerItemQuery.chassisTypeId = chassisTypeIdFilter;
       } else {
         offerItemQuery.chassisTypeId = chassisTypeIdFilter;
+      }
+    }
+    if (drawingSpecificationFilter) {
+      if (typeof drawingSpecificationFilter === 'object' && drawingSpecificationFilter.$in) {
+        offerItemQuery.drawingSpecification = drawingSpecificationFilter;
+      } else {
+        offerItemQuery.drawingSpecification = drawingSpecificationFilter;
       }
     }
     
