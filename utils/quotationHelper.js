@@ -2,7 +2,7 @@ const mongoose = require('mongoose');
 const QuotationHeader = require('../models/quotationHeader.model');
 const QuotationOffer = require('../models/quotationOffer.model');
 const OfferItem = require('../models/offerItem.model');
-const { RFQ } = require('../models/rfq.model');
+const { RFQ, RFQItem } = require('../models/rfq.model');
 const BodyType = require('../models/bodyType.model');
 const DrawingSpecification = require('../models/drawingSpecification.model');
 
@@ -1141,6 +1141,114 @@ const deleteQuotationOffer = async (offerId) => {
   return offer;
 };
 
+/**
+ * Match quotations by LOB on the header OR via linked RFQ (headers often still default to karoseri).
+ */
+async function buildLineOfBusinessMatchCondition(lineOfBusinessType) {
+  const rfqIdsForLob = await RFQ.find({ 'lineOfBusiness.type': lineOfBusinessType }).distinct('_id');
+  const orBranches = [{ 'lineOfBusiness.type': lineOfBusinessType }];
+  if (rfqIdsForLob.length > 0) {
+    orBranches.push({ rfqId: { $in: rfqIdsForLob } });
+  }
+  return { $or: orBranches };
+}
+
+/**
+ * Resolve quotation header IDs whose RFQ items or offer items fuzzy-match search text (service/sparepart LOB).
+ * Returns [] when there are no matches.
+ */
+async function findHeaderIdsByItemsTextSearch(lineOfBusinessType, searchText) {
+  const trimmed = typeof searchText === 'string' ? searchText.trim() : '';
+  if (!trimmed || (lineOfBusinessType !== 'service' && lineOfBusinessType !== 'sparepart')) {
+    return [];
+  }
+
+  const escaped = trimmed.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const regex = new RegExp(escaped, 'i');
+
+  const itemOr =
+    lineOfBusinessType === 'service'
+      ? [{ serviceName: regex }, { notes: regex }, { serviceDetails: regex }]
+      : [{ sparepartName: regex }, { notes: regex }];
+
+  const rfqIdsScoped = await RFQ.find({ 'lineOfBusiness.type': lineOfBusinessType }).distinct('_id');
+
+  let headerIdsFromRfq = [];
+  if (rfqIdsScoped.length > 0) {
+    const matchedRfqIds = await RFQItem.find({
+      rfqId: { $in: rfqIdsScoped },
+      $or: itemOr
+    }).distinct('rfqId');
+
+    if (matchedRfqIds.length > 0) {
+      headerIdsFromRfq = await QuotationHeader.find({
+        rfqId: { $in: matchedRfqIds }
+      }).distinct('_id');
+    }
+  }
+
+  const matchingOfferIds = await OfferItem.find({ $or: itemOr }).distinct('quotationOfferId');
+
+  let headerIdsFromOffers = [];
+  if (matchingOfferIds.length > 0) {
+    const QuotationOfferModel = require('../models/quotationOffer.model');
+    const offers = await QuotationOfferModel.find({ _id: { $in: matchingOfferIds } })
+      .select('quotationHeaderId')
+      .lean();
+
+    const candidateIds = [
+      ...new Set(
+        offers.map((o) => o.quotationHeaderId?.toString()).filter(Boolean)
+      )
+    ];
+
+    if (candidateIds.length > 0) {
+      const lobCond = await buildLineOfBusinessMatchCondition(lineOfBusinessType);
+      headerIdsFromOffers = await QuotationHeader.find({
+        _id: { $in: candidateIds },
+        ...lobCond
+      }).distinct('_id');
+    }
+  }
+
+  const merged = [...new Set([...headerIdsFromRfq.map(String), ...headerIdsFromOffers.map(String)])];
+
+  return merged
+    .map((id) => {
+      try {
+        return new mongoose.Types.ObjectId(id);
+      } catch (e) {
+        return null;
+      }
+    })
+    .filter(Boolean);
+}
+
+/** Merge header ID restriction into Mongo headerQuery (intersects with existing criteria). */
+function mergeHeaderIdsIntoQuery(headerQuery, headerIds) {
+  if (!headerIds?.length) return;
+
+  const needsAndMerge =
+    Object.keys(headerQuery).length > 0 &&
+    (headerQuery.quotationNumber ||
+      headerQuery.$and?.length ||
+      headerQuery.$or ||
+      headerQuery['status.type'] ||
+      headerQuery['lineOfBusiness.type'] ||
+      headerQuery.rfqId ||
+      headerQuery.requesterId ||
+      headerQuery.approverId ||
+      headerQuery.creatorId ||
+      headerQuery.marketingName);
+
+  if (needsAndMerge) {
+    if (!headerQuery.$and) headerQuery.$and = [];
+    headerQuery.$and.push({ _id: { $in: headerIds } });
+  } else {
+    headerQuery._id = { $in: headerIds };
+  }
+}
+
 // Get quotations with pagination and filters
 const getQuotations = async (filters = {}, pagination = { page: 1, limit: 10 }, options = {}) => {
   const { page, limit } = pagination;
@@ -1173,12 +1281,13 @@ const getQuotations = async (filters = {}, pagination = { page: 1, limit: 10 }, 
   if (filters.marketing) {
     headerQuery.marketingName = new RegExp(filters.marketing, 'i');
   }
-  if (filters.status) {
+  const statusTypeFilter = filters['status.type'] ?? filters.status;
+  if (statusTypeFilter) {
     // Handle both string and object (for $in queries)
-    if (typeof filters.status === 'object' && filters.status.$in) {
-      headerQuery['status.type'] = filters.status;
+    if (typeof statusTypeFilter === 'object' && statusTypeFilter.$in) {
+      headerQuery['status.type'] = statusTypeFilter;
     } else {
-      headerQuery['status.type'] = filters.status;
+      headerQuery['status.type'] = statusTypeFilter;
     }
   }
   if (filters['lineOfBusiness.type']) {
@@ -1348,19 +1457,45 @@ const getQuotations = async (filters = {}, pagination = { page: 1, limit: 10 }, 
         }
       };
     }
-    
-    // Add header ID filter to header query
-    // Use $and to combine with existing filters (like quotationNumber)
-    if (Object.keys(headerQuery).length > 0 && (headerQuery.quotationNumber || headerQuery.status || headerQuery['lineOfBusiness.type'])) {
-      // If there are other filters, combine them with $and
-      if (!headerQuery.$and) {
-        headerQuery.$and = [];
-      }
-      headerQuery.$and.push({ _id: { $in: matchingHeaderIds } });
-    } else {
-      // No other filters, just set the _id filter directly
-      headerQuery._id = { $in: matchingHeaderIds };
+  }
+
+  let itemsTextRestrictionIds = null;
+  if (Array.isArray(filters.itemsTextHeaderIds)) {
+    if (filters.itemsTextHeaderIds.length === 0) {
+      return {
+        quotations: [],
+        pagination: {
+          current: page,
+          pages: 0,
+          total: 0
+        }
+      };
     }
+    itemsTextRestrictionIds = filters.itemsTextHeaderIds;
+  }
+
+  let finalHeaderIds = matchingHeaderIds;
+  if (itemsTextRestrictionIds?.length) {
+    if (finalHeaderIds?.length) {
+      const allow = new Set(itemsTextRestrictionIds.map((id) => id.toString()));
+      finalHeaderIds = finalHeaderIds.filter((id) => allow.has(id.toString()));
+    } else {
+      finalHeaderIds = itemsTextRestrictionIds;
+    }
+    if (!finalHeaderIds.length) {
+      return {
+        quotations: [],
+        pagination: {
+          current: page,
+          pages: 0,
+          total: 0
+        }
+      };
+    }
+  }
+
+  if (finalHeaderIds?.length) {
+    mergeHeaderIdsIntoQuery(headerQuery, finalHeaderIds);
   }
 
   // Get headers with pagination
@@ -1957,6 +2092,8 @@ module.exports = {
   deleteQuotationHeader,
   deleteQuotationOffer,
   getQuotations,
+  findHeaderIdsByItemsTextSearch,
+  buildLineOfBusinessMatchCondition,
   updateLastFollowUp,
   updateLastFollowUpAll,
   migrateOfferNumbers,

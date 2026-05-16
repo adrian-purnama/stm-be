@@ -26,6 +26,8 @@ const {
   deleteQuotationHeader,
   deleteQuotationOffer,
   getQuotations,
+  findHeaderIdsByItemsTextSearch,
+  buildLineOfBusinessMatchCondition,
   updateLastFollowUp,
   updateLastFollowUpAll,
   generateQuotationNumber,
@@ -178,6 +180,30 @@ router.get('/', authenticateToken, authorize(['quotation_view']), async (req, re
     }
     if (featureTypeIds.length > 0) {
       userFilters.featureTypeId = { $in: featureTypeIds };
+    }
+
+    const VALID_LOB_TYPES = ['karoseri', 'non_karoseri', 'service', 'sparepart'];
+    const lobQuery = req.query.lineOfBusinessType;
+    const validatedLob =
+      lobQuery && VALID_LOB_TYPES.includes(String(lobQuery)) ? String(lobQuery) : null;
+
+    if (validatedLob) {
+      userFilters.$and = userFilters.$and || [];
+      userFilters.$and.push(await buildLineOfBusinessMatchCondition(validatedLob));
+    }
+
+    const itemsTextTrimmed =
+      typeof req.query.itemsTextSearch === 'string' ? req.query.itemsTextSearch.trim() : '';
+
+    if (
+      validatedLob &&
+      (validatedLob === 'service' || validatedLob === 'sparepart') &&
+      itemsTextTrimmed
+    ) {
+      userFilters.itemsTextHeaderIds = await findHeaderIdsByItemsTextSearch(
+        validatedLob,
+        itemsTextTrimmed
+      );
     }
     
     console.log('[Search] Final userFilters:', JSON.stringify(userFilters, null, 2));
@@ -410,6 +436,30 @@ router.get('/all', authenticateToken, authorize(['all_quotation_viewer']), async
     }
     if (featureTypeIds.length > 0) {
       userFilters.featureTypeId = { $in: featureTypeIds };
+    }
+
+    const VALID_LOB_TYPES_ALL = ['karoseri', 'non_karoseri', 'service', 'sparepart'];
+    const lobQueryAll = req.query.lineOfBusinessType;
+    const validatedLobAll =
+      lobQueryAll && VALID_LOB_TYPES_ALL.includes(String(lobQueryAll)) ? String(lobQueryAll) : null;
+
+    if (validatedLobAll) {
+      userFilters.$and = userFilters.$and || [];
+      userFilters.$and.push(await buildLineOfBusinessMatchCondition(validatedLobAll));
+    }
+
+    const itemsTextTrimmedAll =
+      typeof req.query.itemsTextSearch === 'string' ? req.query.itemsTextSearch.trim() : '';
+
+    if (
+      validatedLobAll &&
+      (validatedLobAll === 'service' || validatedLobAll === 'sparepart') &&
+      itemsTextTrimmedAll
+    ) {
+      userFilters.itemsTextHeaderIds = await findHeaderIdsByItemsTextSearch(
+        validatedLobAll,
+        itemsTextTrimmedAll
+      );
     }
     
     console.log('[Search /all] Final userFilters:', JSON.stringify(userFilters, null, 2));
